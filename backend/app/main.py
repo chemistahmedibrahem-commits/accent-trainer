@@ -22,6 +22,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,8 +32,11 @@ from accent_engine.g2p import g2p
 from accent_engine.phonemes import to_ipa
 from accent_engine.vad import UtteranceSegmenter
 from accent_engine.vowel_space import CALIBRATION_WORDS, REF_SD, REFERENCE, SpeakerNorm
+from trainer import exercises
+from trainer.planner import plan as make_plan
+from trainer.skills import SKILL_LABEL
 
-from . import services
+from . import coach, conversation, reports, services
 from .config import settings
 from .content import MINIMAL_PAIRS, SENTENCES
 from .db import Attempt, PhoneStat, SessionLocal, User, init_db
@@ -197,6 +201,135 @@ async def progress(name: str, db: AsyncSession = Depends(get_db)) -> dict[str, A
             for a in attempts
         ],
     }
+
+
+async def _user(db: AsyncSession, name: str) -> User:
+    u = (await db.execute(select(User).where(User.name == name))).scalar_one_or_none()
+    if u is None:
+        raise HTTPException(404, "unknown user")
+    return u
+
+
+@app.get("/api/users/{name}/dashboard")
+async def dashboard(name: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    return await reports.dashboard(db, await _user(db, name))
+
+
+@app.get("/api/users/{name}/plan")
+async def study_plan(name: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    from datetime import UTC, datetime
+
+    u = await _user(db, name)
+    drills = make_plan(await services.skill_states(db, u), datetime.now(UTC))
+    return {
+        "drills": [
+            {"kind": d.kind, "skill": d.skill, "label": d.label, "items": d.items, "reason": d.reason}
+            for d in drills
+        ]
+    }
+
+
+@app.get("/api/drills/{skill}")
+async def drills(skill: str, position: str | None = None) -> dict[str, Any]:
+    if skill not in SKILL_LABEL:
+        raise HTTPException(404, "unknown skill")
+    return {
+        "skill": skill,
+        "label": SKILL_LABEL[skill],
+        "words": await run_in_threadpool(exercises.words_for, skill, position, 12),
+        "minimal_pairs": await run_in_threadpool(exercises.minimal_pairs, skill, 12),
+        "tongue_twisters": exercises.TONGUE_TWISTERS.get(skill, []),
+        "shadowing": exercises.SHADOWING,
+    }
+
+
+@app.get("/api/tts")
+async def tts(text: str = Query(..., max_length=500), rate: float = Query(1.0, ge=0.5, le=1.5)) -> Response:
+    from .speech import tts as synth
+
+    try:
+        wav, _ = await run_in_threadpool(synth, text, rate)
+    except Exception as e:
+        raise HTTPException(503, f"TTS unavailable: {e}") from e
+    return Response(wav, media_type="audio/wav", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/api/attempts/{attempt_id}/coach")
+async def attempt_coach(attempt_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    att = await db.get(Attempt, attempt_id)
+    if att is None:
+        raise HTTPException(404, "unknown attempt")
+    u = await db.get(User, att.user_id)
+    assert u is not None
+    dash = await reports.dashboard(db, u)
+    return await run_in_threadpool(coach.coach, att.result, dash["weaknesses"])
+
+
+@app.get("/api/conversation/scenarios")
+async def scenarios() -> dict[str, Any]:
+    return {k: {"title": v["title"], "opener": v["script"][0]} for k, v in conversation.SCENARIOS.items()}
+
+
+@app.post("/api/conversation/turn")
+async def conversation_turn(
+    scenario: str = Form("small_talk"),
+    history: str = Form("[]"),
+    user: str = Form("default"),
+    audio: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    import json as _json
+
+    from .speech import transcribe
+
+    pcm = services.decode_audio(await audio.read())
+    transcript = await run_in_threadpool(transcribe, pcm)
+    hist = _json.loads(history)
+    if not transcript:
+        return {
+            "transcript": "",
+            "reply": {"text": "Sorry, I didn't catch that. Could you say it again?", "source": "script"},
+        }
+    u = await services.get_or_create_user(db, user)
+    try:
+        result = await run_in_threadpool(services.assess, pcm, transcript, u.speaker_norm, u.gender)
+        att = await services.record_attempt(db, u, transcript, "conversation", result, pcm)
+        feedback = await run_in_threadpool(coach.coach, result, None)
+    except ValueError:
+        result, att, feedback = None, None, None
+    rep = await run_in_threadpool(conversation.reply, scenario, hist, transcript)
+    return {
+        "transcript": transcript,
+        "reply": rep,
+        "attempt_id": att.id if att else None,
+        "assessment": result,
+        "feedback": feedback,
+    }
+
+
+@app.get("/api/users/{name}/report.{fmt}")
+async def report(name: str, fmt: str, db: AsyncSession = Depends(get_db)) -> Response:
+    u = await _user(db, name)
+    dash = await reports.dashboard(db, u, weeks=52)
+    atts = list(
+        (
+            await db.execute(select(Attempt).where(Attempt.user_id == u.id).order_by(Attempt.created_at))
+        ).scalars()
+    )
+    if fmt == "csv":
+        return Response(
+            reports.to_csv(dash, atts),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="accent-report-{name}.csv"'},
+        )
+    if fmt == "pdf":
+        pdf = await run_in_threadpool(reports.to_pdf, dash, atts)
+        return Response(
+            pdf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="accent-report-{name}.pdf"'},
+        )
+    raise HTTPException(404, "format must be csv or pdf")
 
 
 # --------------------------------------------------------------------------- WebSocket

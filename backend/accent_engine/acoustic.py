@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import unicodedata
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -123,39 +123,182 @@ IPA_TO_ARPABET: dict[str, str] = {
 }
 
 
-def ipa_token_to_arpabet(token: str) -> str:
-    t = unicodedata.normalize("NFC", token).replace("ː", "").replace("ˑ", "").strip()
+# Two-phone tokens in the espeak inventory (GA r-coloured vowels, syllabic l, triphthongs).
+# They are split exactly by frame doubling, see :func:`pool_log_probs`.
+COMPOSITE_IPA: dict[str, tuple[str, str]] = {
+    "ɑːɹ": ("AA", "R"),
+    "ɔːɹ": ("AO", "R"),
+    "oːɹ": ("AO", "R"),
+    "ɛɹ": ("EH", "R"),
+    "ɪɹ": ("IH", "R"),
+    "ʊɹ": ("UH", "R"),
+    "aɪɚ": ("AY", "ER"),
+    "aɪə": ("AY", "AH"),
+    "əl": ("AH", "L"),
+    "iə": ("IY", "AH"),
+    "ʊə": ("UH", "AH"),
+    "eə": ("EH", "AH"),
+}
+_ASPIRATED = {
+    "pʰ": "P",
+    "tʰ": "T",
+    "kʰ": "K",
+    "ph": "P",
+    "th": "T",
+    "kh": "K",
+    "tʃʰ": "CH",
+    "ɛɪ": "EY",
+    "oɪ": "OY",
+    "ɐɐ": "AH",
+    "e̞e̞": "EH",
+    "o̞o̞": "OW",
+    "ää": "AA",
+}
+
+
+def ipa_token_to_arpabet(token: str) -> str | tuple[str, str]:
+    """Single ARPAbet phone, a (first, second) pair for composite tokens, or ``OTHER``."""
+    raw = unicodedata.normalize("NFC", token).strip()
+    if raw in COMPOSITE_IPA:
+        return COMPOSITE_IPA[raw]
+    if raw in _ASPIRATED:
+        return _ASPIRATED[raw]
+    t = raw.replace("ː", "").replace("ˑ", "")
     if t in IPA_TO_ARPABET:
         return IPA_TO_ARPABET[t]
+    if t in _ASPIRATED:
+        return _ASPIRATED[t]
     t2 = "".join(c for c in unicodedata.normalize("NFD", t) if not unicodedata.combining(c))
     return IPA_TO_ARPABET.get(t2, OTHER)
 
 
+# TIMIT / ARPAbet-labelled models (lower-case tokens, possibly with "_err" / "*" error marks).
+TIMIT_TO_ARPABET: dict[str, str | tuple[str, str]] = {
+    "ax": "AH",
+    "ax-h": "AH",
+    "axr": "ER",
+    "ix": "IH",
+    "ux": "UW",
+    "nx": "N",
+    "hv": "HH",
+    "eng": "NG",
+    "el": ("AH", "L"),
+    "em": ("AH", "M"),
+    "en": ("AH", "N"),
+    "dx": "DX",
+    "q": "Q",
+}
+EXTRA_IPA: dict[str, str] = {
+    "ʧ": "CH",
+    "ʤ": "JH",
+    "t͡ʃ": "CH",
+    "d͡ʒ": "JH",
+    "ɹ̩": "ER",
+    "ej": "EY",
+    "aj": "AY",
+    "oj": "OY",
+    "aw": "AW",
+    "ow": "OW",
+    "g": "G",
+}
+_ARPA_SET = {p.lower() for p in PHONES}
+
+
+def is_arpabet_vocab(model_vocab: list[str]) -> bool:
+    toks = [t.split("_")[0].rstrip("*") for t in model_vocab]
+    return sum(t in _ARPA_SET for t in toks) >= 30 and "iy" in toks
+
+
+def token_to_arpabet(token: str, arpabet_vocab: bool) -> str | tuple[str, str]:
+    if arpabet_vocab:
+        t = token.split("_")[0].rstrip("*").lower()
+        if t in TIMIT_TO_ARPABET:
+            return TIMIT_TO_ARPABET[t]
+        return t.upper() if t in _ARPA_SET else OTHER
+    raw = unicodedata.normalize("NFC", token).strip()
+    if raw in EXTRA_IPA:
+        return EXTRA_IPA[raw]
+    return ipa_token_to_arpabet(token)
+
+
 def pooling_matrix(model_vocab: list[str], blank_token: str) -> NDArray[np.int64]:
-    """For each model token, the engine VOCAB index it pools into."""
-    out = np.empty(len(model_vocab), dtype=np.int64)
+    """``(2, V_model)``: engine VOCAB index each model token pools into, for the first and the
+    second half of a doubled frame. Rows differ only for composite tokens."""
+    out = np.empty((2, len(model_vocab)), dtype=np.int64)
+    arpa = is_arpabet_vocab(model_vocab)
     for i, tok in enumerate(model_vocab):
         if tok == blank_token:
-            out[i] = BLANK_ID
-        elif tok.startswith("<") or tok in ("|", "[PAD]", "[UNK]"):
-            out[i] = OTHER_ID
+            out[:, i] = BLANK_ID
+            continue
+        if tok.startswith("<") or tok in ("|", "[PAD]", "[UNK]"):
+            out[:, i] = OTHER_ID
+            continue
+        a = token_to_arpabet(tok, arpa)
+        if isinstance(a, tuple):
+            out[0, i], out[1, i] = PHONE_TO_ID[a[0]], PHONE_TO_ID[a[1]]
         else:
-            out[i] = (
-                PHONE_TO_ID[ipa_token_to_arpabet(tok)] if ipa_token_to_arpabet(tok) != OTHER else OTHER_ID
-            )
+            out[:, i] = PHONE_TO_ID[a] if a != OTHER else OTHER_ID
+    return out
+
+
+# Engine classes a model may lack (TIMIT-39 folds AO→AA, has no flap or glottal stop). They
+# borrow the posterior of their closest class so targets stay alignable; the engine already
+# accepts these aliases as correct realisations, so this never manufactures errors.
+CLASS_ALIASES: dict[str, tuple[str, ...]] = {
+    "DX": ("D", "T"),
+    "AO": ("AA",),
+    "Q": ("T",),
+    "ZH": ("SH",),
+    "OY": ("AO", "OW"),
+    "AW": ("AA",),
+    "ER": ("R",),
+    "HH": (),
+    "NG": ("N",),
+}
+FLOOR_LOGP = -30.0
+ALIAS_PENALTY = 0.7  # nats
+
+
+def _pool(lp: NDArray[np.float64], mapping: NDArray[np.int64]) -> NDArray[np.float64]:
+    T = lp.shape[0]
+    if mapping.shape[0] < lp.shape[1]:  # output layer larger than vocab.json: extra units → <other>
+        mapping = np.concatenate([mapping, np.full(lp.shape[1] - mapping.shape[0], OTHER_ID)])
+    lp = lp[:, : mapping.shape[0]]
+    out = np.full((T, len(VOCAB)), -1e30)
+    present = set(np.unique(mapping).tolist())
+    for target in present:
+        cols = lp[:, mapping == target]
+        m = cols.max(axis=1, keepdims=True)
+        out[:, target] = (m + np.log(np.exp(cols - m).sum(axis=1, keepdims=True)))[:, 0]
+    for cls in PHONES:
+        k = PHONE_TO_ID[cls]
+        if k in present:
+            continue
+        alias = next((PHONE_TO_ID[a] for a in CLASS_ALIASES.get(cls, ()) if PHONE_TO_ID[a] in present), None)
+        # slightly below the real class so recognition never picks the borrowed label
+        out[:, k] = out[:, alias] - ALIAS_PENALTY if alias is not None else FLOOR_LOGP
+    m = out.max(axis=1, keepdims=True)
+    out -= m + np.log(np.exp(out - m).sum(axis=1, keepdims=True))
     return out
 
 
 def pool_log_probs(model_log_probs: NDArray[np.float64], mapping: NDArray[np.int64]) -> NDArray[np.float64]:
-    T = model_log_probs.shape[0]
-    out = np.full((T, len(VOCAB)), -1e30)
-    for target in np.unique(mapping):
-        cols = model_log_probs[:, mapping == target]
-        m = cols.max(axis=1, keepdims=True)
-        out[:, target] = (m + np.log(np.exp(cols - m).sum(axis=1, keepdims=True)))[:, 0]
-    # renormalise (pooling is exact in probability space, but guard numeric drift)
-    m = out.max(axis=1, keepdims=True)
-    out -= m + np.log(np.exp(out - m).sum(axis=1, keepdims=True))
+    """Pool model-token posteriors into engine VOCAB classes.
+
+    If ``mapping`` is 1-D (or both rows are equal) this is plain log-sum-exp pooling. With
+    composite tokens every frame is doubled: copy 1 gives the composite's mass to its first
+    phone, copy 2 to its second. Every CTC path probability is then exactly squared
+    (composite paths included), so likelihood *ratios* are preserved in log space ×2.
+    """
+    if mapping.ndim == 1:
+        return _pool(model_log_probs, mapping)
+    if np.array_equal(mapping[0], mapping[1]):
+        return _pool(model_log_probs, mapping[0])
+    a = _pool(model_log_probs, mapping[0])
+    b = _pool(model_log_probs, mapping[1])
+    out = np.empty((2 * a.shape[0], a.shape[1]))
+    out[0::2] = a
+    out[1::2] = b
     return out
 
 
@@ -165,28 +308,42 @@ class Wav2Vec2PhonemeModel:
         model_id: str = "facebook/wav2vec2-xlsr-53-espeak-cv-ft",
         device: str | None = None,
     ) -> None:
+        import json
+
         import torch
-        from transformers import AutoModelForCTC, AutoProcessor
+        from huggingface_hub import hf_hub_download
+        from transformers import AutoFeatureExtractor, AutoModelForCTC
 
         self.name = model_id
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.processor = AutoProcessor.from_pretrained(model_id)
+        # Only the feature extractor + raw vocab are needed: the phoneme tokenizer class would
+        # pull in `phonemizer`/espeak, which we never use (we never encode text with it).
+        self.feature_extractor = AutoFeatureExtractor.from_pretrained(model_id)
         self.model = AutoModelForCTC.from_pretrained(model_id).to(self.device).eval()
-        vocab = self.processor.tokenizer.get_vocab()
-        id_to_tok = [""] * len(vocab)
+        if self.device == "cuda":
+            self.model = self.model.half()
+        with open(hf_hub_download(model_id, "vocab.json")) as f:
+            raw_vocab: dict[str, Any] = json.load(f)
+        first = next(iter(raw_vocab.values()), None)
+        vocab: dict[str, int] = first if isinstance(first, dict) else raw_vocab  # some are {lang: vocab}
+        id_to_tok = [""] * (max(vocab.values()) + 1)
         for tok, i in vocab.items():
             id_to_tok[i] = tok
-        blank_tok = self.processor.tokenizer.pad_token
-        self._mapping = pooling_matrix(id_to_tok, blank_tok)
+        blank_id = int(self.model.config.pad_token_id)
+        self._mapping = pooling_matrix(id_to_tok, id_to_tok[blank_id])
         self._torch = torch
 
     def posteriors(self, audio: NDArray[np.float32]) -> Posteriors:
         torch = self._torch
-        inputs = self.processor(audio, sampling_rate=SAMPLE_RATE, return_tensors="pt")
+        inputs = self.feature_extractor(audio, sampling_rate=SAMPLE_RATE, return_tensors="pt")
+        x = inputs.input_values.to(self.device)
+        if self.device == "cuda":
+            x = x.half()
         with torch.inference_mode():
-            logits = self.model(inputs.input_values.to(self.device)).logits[0]
+            logits = self.model(x).logits[0]
             lp = torch.log_softmax(logits.float(), dim=-1).cpu().numpy().astype(np.float64)
-        return Posteriors(pool_log_probs(lp, self._mapping), frame_shift=0.02)
+        pooled = pool_log_probs(lp, self._mapping)
+        return Posteriors(pooled, frame_shift=0.02 * lp.shape[0] / pooled.shape[0])
 
 
 # ---------------------------------------------------------------------------

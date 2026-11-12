@@ -18,11 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from accent_engine import PronunciationEngine
 from accent_engine.acoustic import SAMPLE_RATE, AcousticModel, SyntheticAcousticModel
 from accent_engine.engine import EngineConfig
-from accent_engine.g2p import g2p
+from accent_engine.g2p import build_target, g2p, lexicon_for
 from accent_engine.vowel_space import SpeakerNorm
+from trainer import bkt, fsrs
+from trainer.planner import SkillState
+from trainer.skills import observations
 
 from .config import settings
-from .db import Attempt, PhoneStat, User
+from .db import Attempt, PhoneStat, SkillObservation, SkillStat, User
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +64,19 @@ def decode_audio(data: bytes) -> NDArray[np.float32]:
     return np.asarray(mono, dtype=np.float32)
 
 
+def reference_audio(text: str) -> NDArray[np.float32] | None:
+    """Native-like GA reference (TTS) for intonation comparison; None if TTS is unavailable."""
+    if not settings.reference_tts:
+        return None
+    try:
+        from .speech import tts_16k
+
+        return tts_16k(text)
+    except Exception as e:
+        log.warning("reference TTS unavailable: %s", e)
+        return None
+
+
 def assess(
     audio: NDArray[np.float32],
     text: str,
@@ -80,6 +96,8 @@ def assess(
         if norm
         else None
     )
+    if reference is None:
+        reference = reference_audio(text)
     return engine_for(text, gender).assess(audio, text, speaker_norm=sn, reference_audio=reference).to_dict()
 
 
@@ -119,8 +137,11 @@ async def record_attempt(
         model=result.get("model", ""),
     )
     db.add(att)
+    await db.flush()
     error_idx = {e["target_index"] for e in result["errors"] if e["target_index"] is not None}
-    tp = g2p(text).phones
+    # same variant choice the engine made, so indices line up
+    tp = build_target(lexicon_for(text), [w.get("variant", 0) for w in result["words"]]).phones
+    await update_skills(db, user, att, result, tp)
     for w in result["words"]:
         for ph in w["phones"]:
             pos = tp[ph["index"]].position if ph["index"] < len(tp) else "medial"
@@ -144,3 +165,72 @@ async def record_attempt(
             stat.mean_score += (score - stat.mean_score) / stat.n
     await db.commit()
     return att
+
+
+def _aware(d: Any) -> Any:
+    from datetime import UTC
+
+    return d.replace(tzinfo=UTC) if d is not None and d.tzinfo is None else d  # SQLite drops tz
+
+
+def _to_state(row: SkillStat) -> SkillState:
+    return SkillState(
+        row.skill,
+        row.p_known,
+        fsrs.Card(
+            row.stability, row.difficulty, row.reps, row.lapses, _aware(row.last_review), _aware(row.due)
+        ),
+        row.n_obs,
+    )
+
+
+async def skill_states(db: AsyncSession, user: User) -> list[SkillState]:
+    rows = (await db.execute(select(SkillStat).where(SkillStat.user_id == user.id))).scalars().all()
+    return [_to_state(r) for r in rows]
+
+
+async def update_skills(db: AsyncSession, user: User, att: Attempt, result: dict[str, Any], tp: Any) -> None:
+    """BKT update per opportunity; one FSRS review per skill per attempt (graded by mean score)."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    obs = observations(result, tp)
+    by_skill: dict[str, list[Any]] = {}
+    for o in obs:
+        by_skill.setdefault(o.skill, []).append(o)
+        db.add(
+            SkillObservation(
+                user_id=user.id,
+                attempt_id=att.id,
+                skill=o.skill,
+                word=o.word[:64],
+                correct=o.correct,
+                score=o.score,
+            )
+        )
+    for skill, items in by_skill.items():
+        row = (
+            await db.execute(select(SkillStat).where(SkillStat.user_id == user.id, SkillStat.skill == skill))
+        ).scalar_one_or_none()
+        if row is None:
+            row = SkillStat(
+                user_id=user.id,
+                skill=skill,
+                p_known=bkt.DEFAULT.p_init,
+                n_obs=0,
+                n_correct=0,
+                stability=0.0,
+                difficulty=0.0,
+                reps=0,
+                lapses=0,
+            )
+            db.add(row)
+        st = _to_state(row)
+        for o in items:
+            st.observe(o.correct)
+        st.review(sum(o.score for o in items) / len(items), now)
+        row.p_known, row.n_obs = st.p_known, st.n_obs
+        row.n_correct = (row.n_correct or 0) + sum(o.correct for o in items)
+        c = st.card
+        row.stability, row.difficulty, row.reps, row.lapses = c.stability, c.difficulty, c.reps, c.lapses
+        row.last_review, row.due = c.last_review, c.due

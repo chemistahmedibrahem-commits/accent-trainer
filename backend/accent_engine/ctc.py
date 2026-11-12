@@ -106,6 +106,8 @@ def forced_align(log_probs: FloatArray, targets: Sequence[int], blank: int) -> l
             if first[tok] < 0:
                 first[tok] = t
             last[tok] = t
+    if min(first) < 0 or max(delta[S - 1], delta[S - 2]) < NEG_INF / 2:
+        raise ValueError("forced alignment failed: target not reachable under the posteriors")
     segs: list[Segment] = []
     for k in range(L):
         start = first[k]

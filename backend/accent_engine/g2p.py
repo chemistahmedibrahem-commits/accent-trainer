@@ -107,6 +107,11 @@ WEAK_FORMS: dict[str, list[str]] = {
     "but": ["B AH0 T", "B AH1 T"],
     "as": ["AH0 Z", "AE1 Z"],
     "are": ["ER0", "AA1 R"],
+    "his": ["HH IH1 Z", "IH0 Z"],
+    "he": ["HH IY1", "IY0"],
+    "has": ["HH AE1 Z", "HH AH0 Z", "AH0 Z"],
+    "have": ["HH AE1 V", "HH AH0 V", "AH0 V"],
+    "had": ["HH AE1 D", "HH AH0 D", "AH0 D"],
     "or": ["ER0", "AO1 R"],
 }
 
@@ -278,7 +283,54 @@ def _neural_g2p():  # type: ignore[no-untyped-def]
         return None
 
 
+_SIBILANTS = {"S", "Z", "SH", "ZH", "CH", "JH"}
+_VOICELESS = {"P", "T", "K", "F", "TH", "S", "SH", "CH", "HH"}
+
+
+def _morph(word: str) -> Pron | None:
+    """OOV inflections of known words: possessive/plural -s, past -ed, -ing."""
+    cmu = _cmudict()
+    for suffix, kind in (
+        ("'s", "s"),
+        ("s'", "s"),
+        ("es", "s"),
+        ("s", "s"),
+        ("ed", "d"),
+        ("d", "d"),
+        ("ing", "ing"),
+    ):
+        if not word.endswith(suffix) or len(word) - len(suffix) < 2:
+            continue
+        base = word[: -len(suffix)]
+        if base not in cmu and kind == "ing" and base + "e" in cmu:
+            base += "e"
+        if base not in cmu:
+            continue
+        pron: list[tuple[str, int | None]] = list(_parse_arpabet(cmu[base][0]))
+        last = pron[-1][0]
+        add: list[tuple[str, int | None]]
+        if kind == "s":
+            add = (
+                [("IH", 0), ("Z", None)]
+                if last in _SIBILANTS
+                else [("S" if last in _VOICELESS else "Z", None)]
+            )
+        elif kind == "d":
+            add = (
+                [("IH", 0), ("D", None)]
+                if last in ("T", "D")
+                else [("T" if last in _VOICELESS else "D", None)]
+            )
+        else:
+            add = [("IH", 0), ("NG", None)]
+        return tuple(pron + add)
+    return None
+
+
 def _oov(word: str) -> WordPron:
+    m = _morph(word)
+    if m is not None:
+        return WordPron(word, [m], "cmudict")
     g = _neural_g2p()
     if g is not None:
         toks = [t for t in g(word) if re.fullmatch(r"[A-Z]+[012]?", t)]
@@ -324,6 +376,23 @@ def lexicon_for(text: str) -> list[WordPron]:
 # ---------------------------------------------------------------------------
 
 
+_PRE_R_MERGER: dict[str, frozenset[str]] = {
+    "IY": frozenset({"IH"}),
+    "IH": frozenset({"IY"}),
+    "AO": frozenset({"OW", "AA"}),
+    "OW": frozenset({"AO"}),
+    "UH": frozenset({"UW", "AO"}),
+    "UW": frozenset({"UH"}),
+    "EH": frozenset({"EY", "AE"}),
+    "EY": frozenset({"EH"}),
+}
+
+
+_REDUCIBLE = frozenset({"AH", "IH", "IY", "EH", "UW", "UH"})
+_REDUCED = frozenset({"AH", "IH"})
+_COT_CAUGHT: dict[str, frozenset[str]] = {"AO": frozenset({"AA"}), "AA": frozenset({"AO"})}
+
+
 def build_target(lexicon: Sequence[WordPron], choice: Sequence[int] | None = None) -> Target:
     """Concatenate one variant per word and apply General American post-lexical rules."""
     choice = list(choice) if choice is not None else [0] * len(lexicon)
@@ -367,9 +436,24 @@ def build_target(lexicon: Sequence[WordPron], choice: Sequence[int] | None = Non
                 and pos != "initial"
                 and ((same_word and nxt[1] == 0) or (not same_word and pos == "final"))
             ):
-                surface, alts, allo = "DX", frozenset({ph}), "flap"
+                # [d]-like taps are the same gesture; [t] is accepted but noted (FLAP_T)
+                surface, alts, allo = "DX", frozenset({ph, "D"}), "flap"
         if ph == "L" and (nxt is None or not is_vowel(nxt[0]) or nxt[2] != wi):
             allo = "dark_l"
+        # Pre-coda-/r/ neutralisation: in GA "here/beer", "more/four", "poor/tour", "there/care"
+        # the tense–lax contrast is lost, dictionaries and phone models disagree on the label.
+        if (
+            ph in _PRE_R_MERGER
+            and nxt is not None
+            and nxt[0] == "R"
+            and nxt[2] == wi
+            and (nxt2 is None or nxt2[2] != wi or not is_vowel(nxt2[0]))
+        ):
+            alts = alts | _PRE_R_MERGER[ph]
+        if is_vowel(ph) and st == 0 and ph in _REDUCIBLE:
+            alts = alts | (_REDUCED - {ph})  # GA reduced vowels: [ə] and [ɪ] (roses, delicate)
+        if ph in _COT_CAUGHT:
+            alts = alts | _COT_CAUGHT[ph]  # cot–caught merger, majority of GA speakers
 
         phones.append(TargetPhone(surface, st, wi, syl, pos, ph, alts, allo))
     return Target([wp.text for wp in lexicon], phones, choice)

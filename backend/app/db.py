@@ -61,6 +61,39 @@ class PhoneStat(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
+class SkillStat(Base):
+    """Adaptive-training state per user × skill (error-taxonomy skill): BKT + FSRS card."""
+
+    __tablename__ = "skill_stats"
+    __table_args__ = (UniqueConstraint("user_id", "skill"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    skill: Mapped[str] = mapped_column(String(32))
+    p_known: Mapped[float] = mapped_column(Float)
+    n_obs: Mapped[int] = mapped_column(Integer, default=0)
+    n_correct: Mapped[int] = mapped_column(Integer, default=0)
+    stability: Mapped[float] = mapped_column(Float, default=0.0)
+    difficulty: Mapped[float] = mapped_column(Float, default=0.0)
+    reps: Mapped[int] = mapped_column(Integer, default=0)
+    lapses: Mapped[int] = mapped_column(Integer, default=0)
+    last_review: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    due: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SkillObservation(Base):
+    """One opportunity to show a skill (for trends / heatmaps over time)."""
+
+    __tablename__ = "skill_observations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    attempt_id: Mapped[int] = mapped_column(ForeignKey("attempts.id"), index=True)
+    skill: Mapped[str] = mapped_column(String(32), index=True)
+    word: Mapped[str] = mapped_column(String(64))
+    correct: Mapped[bool] = mapped_column()
+    score: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
 engine = create_async_engine(settings.database_url, future=True)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 

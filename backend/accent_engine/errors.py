@@ -153,7 +153,7 @@ _PAIRS = [
 
 def classify_substitution(t: TargetPhone, realized: str) -> str:
     exp = t.phone
-    if t.allophone == "flap" and realized in ("T", "D"):
+    if t.allophone == "flap" and realized == "T":
         return "FLAP_T"
     if t.position == "final" and VOICING_PAIRS.get(exp) == realized:
         return "FINAL_DEVOICING"
@@ -179,7 +179,7 @@ def detect_errors(
     for k, op in enumerate(ops):
         if op.kind == "match" and op.ref_index is not None and op.hyp is not None:
             t = targets[op.ref_index]
-            if t.allophone == "flap" and op.hyp in ("T", "D") and op.hyp != t.phone:
+            if t.allophone == "flap" and op.hyp == "T":
                 # accepted (intelligible) but non-native: report as a minor note, no score cap
                 errs.append(
                     PronunciationError(
