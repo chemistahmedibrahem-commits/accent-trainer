@@ -1,0 +1,94 @@
+export interface PhoneResult {
+  index: number;
+  phone: string;
+  ipa: string;
+  stress: number | null;
+  allophone: string | null;
+  realized: string | null;
+  score: number;
+  lpr: number;
+  start: number | null;
+  end: number | null;
+  formants: { f1: number; f2: number; f3: number } | null;
+  vowel_score: { vowel: string; point: [number, number]; target: [number, number]; distance: number; nearest: string; score: number } | null;
+}
+
+export interface WordResult {
+  index: number;
+  text: string;
+  accuracy: number;
+  phones: PhoneResult[];
+  stress: { expected_syllable: number; produced_syllable: number; correct: boolean } | null;
+}
+
+export interface ErrorItem {
+  code: string;
+  name: string;
+  severity: "minor" | "moderate" | "major";
+  tip: string;
+  word_index: number;
+  word: string;
+  target_index: number | null;
+  expected: string | null;
+  realized: string | null;
+  source: string;
+  confidence: number;
+}
+
+export interface Track {
+  times: number[];
+  f0: (number | null)[];
+  energy_db: number[];
+}
+
+export interface Assessment {
+  text: string;
+  words: WordResult[];
+  errors: ErrorItem[];
+  recognized: string[];
+  scores: Record<"accuracy" | "completeness" | "fluency" | "prosody" | "stress" | "rhythm" | "intonation" | "total", number | null>;
+  prosody: { track?: Track; reference_track?: Track; rhythm?: { npvi_v: number | null } };
+  timing_ms: Record<string, number>;
+  warnings: string[];
+  model: string;
+}
+
+export type ServerMessage =
+  | { type: "ready" }
+  | { type: "level"; db: number }
+  | { type: "speech_start"; t: number }
+  | { type: "speech_end"; t: number; duration: number }
+  | ({ type: "result"; latency_ms: number; attempt_id: number } & Assessment)
+  | { type: "error"; message: string };
+
+export interface Content {
+  minimal_pairs: Record<string, [string, string][]>;
+  sentences: Record<string, string[]>;
+  calibration: Record<string, string>;
+}
+
+export interface VowelReference {
+  sd: number;
+  vowels: Record<string, { z_f1: number; z_f2: number; ipa: string }>;
+}
+
+export interface Progress {
+  user: string;
+  calibrated: boolean;
+  phones: { phone: string; position: string; n: number; error_rate: number; mean_score: number }[];
+  weaknesses: { phone: string; position: string; mean_score: number }[];
+  attempts: { id: number; text: string; total: number | null; created_at: string }[];
+}
+
+async function get<T>(url: string): Promise<T> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return (await r.json()) as T;
+}
+
+export const api = {
+  content: () => get<Content>("/api/content"),
+  vowelReference: () => get<VowelReference>("/api/vowel-reference"),
+  progress: (user: string) => get<Progress>(`/api/users/${encodeURIComponent(user)}/progress`),
+  health: () => get<{ backend: string; model: string }>("/api/health"),
+};

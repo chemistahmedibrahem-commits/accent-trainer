@@ -1,0 +1,7 @@
+services:
+  api:
+    build: { context: ./backend, args: { BASE: "python:3.12-slim" } }
+    deploy: !reset {}
+  worker:
+    build: { context: ./backend, args: { BASE: "python:3.12-slim" } }
+    deploy: !reset {}

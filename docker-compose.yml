@@ -1,0 +1,52 @@
+# GPU: requires the NVIDIA container toolkit. CPU-only: `docker compose -f docker-compose.yml -f docker-compose.cpu.yml up`
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: accent
+      POSTGRES_PASSWORD: accent
+      POSTGRES_DB: accent
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U accent"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+
+  api:
+    build: ./backend
+    environment: &api-env
+      AT_DATABASE_URL: postgresql+asyncpg://accent:accent@db:5432/accent
+      AT_REDIS_URL: redis://redis:6379
+      AT_AUDIO_DIR: /data/audio
+      AT_ACOUSTIC_BACKEND: wav2vec2
+      AT_CORS_ORIGINS: '["http://localhost:8080"]'
+    volumes: [audio:/data/audio, models:/models]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+    ports: ["8000:8000"]
+    deploy: &gpu
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+
+  worker:
+    build: ./backend
+    command: ["arq", "app.worker.WorkerSettings"]
+    environment: *api-env
+    volumes: [audio:/data/audio, models:/models]
+    depends_on: [redis, db]
+    deploy: *gpu
+
+  frontend:
+    build: ./frontend
+    ports: ["8080:80"]
+    depends_on: [api]
+
+volumes:
+  pgdata:
+  audio:
+  models:
