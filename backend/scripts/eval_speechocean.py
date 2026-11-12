@@ -39,11 +39,37 @@ def load_split(root: Path, split: str) -> list[tuple[str, Path, str]]:
     return [(u, root / wavs[u].strip(), texts[u].strip()) for u in sorted(wavs) if u in texts]
 
 
-def extract(args: argparse.Namespace) -> None:
-    from accent_engine.acoustic import Wav2Vec2PhonemeModel
+class CachedModel:
+    """Wraps an acoustic model with an on-disk posterior cache keyed by utterance id."""
 
+    def __init__(self, model_id: str, cache_dir: Path | None) -> None:
+        self.model_id, self.cache_dir = model_id, cache_dir
+        self.name = model_id
+        self.uid = ""
+        self._model: Any = None
+
+    def posteriors(self, audio: np.ndarray) -> Any:
+        from accent_engine.acoustic import Posteriors, Wav2Vec2PhonemeModel
+
+        f = self.cache_dir / f"{self.uid}.npz" if self.cache_dir else None
+        if f is not None and f.exists():
+            z = np.load(f)
+            return Posteriors(z["lp"].astype(np.float64), float(z["shift"]))
+        if self._model is None:
+            self._model = Wav2Vec2PhonemeModel(self.model_id)
+        post = self._model.posteriors(audio)
+        if f is not None:
+            np.savez_compressed(f, lp=post.log_probs.astype(np.float16), shift=post.frame_shift)
+        return post
+
+
+def extract(args: argparse.Namespace) -> None:
     scores = json.loads((args.root / "resource" / "scores.json").read_text())
-    eng = PronunciationEngine(Wav2Vec2PhonemeModel(args.model), EngineConfig(formants=False, prosody=True))
+    if args.cache_dir:
+        args.cache_dir.mkdir(parents=True, exist_ok=True)
+    model = CachedModel(args.model, args.cache_dir)
+    cfg = EngineConfig(formants=False, prosody=True, export_features=True, scorer_path=args.scorer)
+    eng = PronunciationEngine(model, cfg)
     t0 = time.time()
     with open(args.out, "w") as out:
         for split in ("train", "test"):
@@ -56,6 +82,7 @@ def extract(args: argparse.Namespace) -> None:
                     import librosa
 
                     audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+                model.uid = uid
                 try:
                     r = eng.assess(audio, text).to_dict()
                 except Exception as e:
@@ -63,6 +90,7 @@ def extract(args: argparse.Namespace) -> None:
                     continue
                 human = scores[uid]
                 target = build_target(lexicon_for(text), [w["variant"] for w in r["words"]])
+                flagged = {e["target_index"] for e in r["errors"] if e["expected"] is not None}
                 hard = {
                     e["target_index"]
                     for e in r["errors"]
@@ -91,6 +119,8 @@ def extract(args: argparse.Namespace) -> None:
                                     "score": p["score"],
                                     "hard_err": int(p["index"] in hard),
                                     "realized": p["realized"],
+                                    "features": p.get("features"),
+                                    "flagged": int(p["index"] in flagged),
                                 }
                             )
                 out.write(
@@ -188,6 +218,74 @@ def fit(args: argparse.Namespace) -> None:
         Path(args.calibration_out).write_text(json.dumps(report["calibration"], indent=2))
 
 
+def train_scorer(args: argparse.Namespace) -> None:
+    import joblib
+    from sklearn.ensemble import HistGradientBoostingRegressor
+    from sklearn.model_selection import GroupKFold, cross_val_predict
+
+    from accent_engine.scorer import CATEGORICAL, FEATURE_NAMES
+
+    with open(args.feats) as fh:
+        rows = [json.loads(line) for line in fh]
+
+    def xy(split: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        ph = [(r["uid"], p) for r in rows if r["split"] == split for p in r["phones"] if p.get("features")]
+        X = np.array([p["features"] for _, p in ph], dtype=np.float64)
+        y = np.array([p["human"] for _, p in ph], dtype=np.float64)
+        g = np.array([int(u[:5]) for u, _ in ph])  # speaker id → grouped CV (no speaker leakage)
+        return X, y, g
+
+    Xtr, ytr, gtr = xy("train")
+    Xte, yte, _ = xy("test")
+    assert Xtr.shape[1] == len(FEATURE_NAMES), (Xtr.shape, len(FEATURE_NAMES))
+    cat = np.zeros(Xtr.shape[1], dtype=bool)
+    cat[list(CATEGORICAL)] = True
+
+    def make() -> Any:
+        return HistGradientBoostingRegressor(
+            max_iter=400,
+            learning_rate=0.05,
+            max_leaf_nodes=31,
+            min_samples_leaf=40,
+            l2_regularization=1.0,
+            categorical_features=cat,
+            random_state=0,
+        )
+
+    oof = cross_val_predict(make(), Xtr, ytr, groups=gtr, cv=GroupKFold(min(5, len(set(gtr.tolist())))))
+    bad_tr = ytr < 1.5
+    best = (0.0, 60.0)
+    for gate in np.arange(30, 90, 2.5):
+        flag = np.clip(oof, 0, 2) * 50 < gate
+        tp = (flag & bad_tr).sum()
+        prec, rec = tp / max(flag.sum(), 1), tp / max(bad_tr.sum(), 1)
+        f1 = 2 * prec * rec / max(prec + rec, 1e-9)
+        best = max(best, (float(f1), float(gate)))
+    model = make().fit(Xtr, ytr)
+    pred = np.clip(model.predict(Xte), 0, 2)
+    gate = best[1]
+    flag, bad = pred * 50 < gate, yte < 1.5
+    tp = int((flag & bad).sum())
+    meta = {
+        "acoustic_model": args.model_id,
+        "n_train": len(ytr),
+        "n_test": len(yte),
+        "pcc_test": pcc(pred, yte),
+        "pcc_oof_train": pcc(oof, ytr),
+        "error_gate": gate,
+        "mdd_test": {
+            "precision": tp / max(int(flag.sum()), 1),
+            "recall": tp / max(int(bad.sum()), 1),
+            "flag_rate": float(flag.mean()),
+            "human_bad_rate": float(bad.mean()),
+        },
+        "baseline_lpr_pcc_test": pcc(Xte[:, 0], yte),
+    }
+    print(json.dumps(meta, indent=2))
+    if args.out:
+        joblib.dump({"model": model, "feature_names": list(FEATURE_NAMES), "meta": meta}, args.out)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -196,11 +294,17 @@ def main() -> None:
     e.add_argument("--model", default="facebook/wav2vec2-xlsr-53-espeak-cv-ft")
     e.add_argument("--limit", type=int, default=0, help="max utterances per split (0 = all)")
     e.add_argument("--out", type=Path, default=Path("so762_feats.jsonl"))
+    e.add_argument("--cache-dir", type=Path, default=None, help="posterior cache (npz per utterance)")
+    e.add_argument("--scorer", default=None, help="evaluate with a trained scorer")
     f = sub.add_parser("fit")
     f.add_argument("--feats", type=Path, required=True)
     f.add_argument("--calibration-out", type=Path, default=None)
+    t = sub.add_parser("train-scorer")
+    t.add_argument("--feats", type=Path, required=True)
+    t.add_argument("--model-id", default="")
+    t.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
-    extract(args) if args.cmd == "extract" else fit(args)
+    {"extract": extract, "fit": fit, "train-scorer": train_scorer}[args.cmd](args)
 
 
 if __name__ == "__main__":

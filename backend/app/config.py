@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     store_audio: bool = True
     cors_origins: list[str] = ["http://localhost:5173"]
     max_utterance_s: float = 20.0
+    scorer_path: str = ""  # learned phone scorer (scripts/eval_speechocean.py train-scorer)
     reference_tts: bool = True  # synthesize a GA reference for intonation scoring
 
 

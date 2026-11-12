@@ -34,6 +34,8 @@ class EngineConfig:
     prosody: bool = True
     default_gender: Literal["male", "female"] = "male"
     pause_min_s: float = 0.25
+    scorer_path: str | None = None  # learned phone scorer (joblib); None → calibrated GOP
+    export_features: bool = False  # attach per-phone scorer features (for training/eval)
 
 
 @dataclass
@@ -51,6 +53,7 @@ class PhoneResult:
     end: float
     formants: dict[str, float] | None = None
     vowel_score: dict[str, Any] | None = None
+    features: list[float] | None = None
 
 
 @dataclass
@@ -157,6 +160,11 @@ class PronunciationEngine:
         self.acoustic = acoustic
         self.config = config or EngineConfig()
         self.calibration = calibration or Calibration()
+        self.scorer = None
+        if self.config.scorer_path:
+            from .scorer import LearnedScorer
+
+            self.scorer = LearnedScorer.load(self.config.scorer_path)
 
     def assess(
         self,
@@ -204,6 +212,10 @@ class PronunciationEngine:
                 realized[op.ref_index] = op.hyp if op.hyp is not None else "<del>"
 
         phones = self._phone_results(tp, gop, segs, post, realized, errors)
+        if segs is not None and (self.scorer is not None or cfg.export_features):
+            t_s = time.perf_counter()
+            errors = self._learned(post, tp, segs, gop, ops, errors, phones)
+            timing["scorer"] = (time.perf_counter() - t_s) * 1000
 
         # --- formants / vowel space / dark L
         t2 = time.perf_counter()
@@ -237,6 +249,52 @@ class PronunciationEngine:
         )
 
     # ------------------------------------------------------------------ helpers
+
+    def _learned(
+        self,
+        post: Posteriors,
+        tp: Sequence[TargetPhone],
+        segs: Sequence[Segment],
+        gop: Sequence[PhoneGOP],
+        ops: Sequence[AlignOp],
+        errors: list[PronunciationError],
+        phones: list[PhoneResult],
+    ) -> list[PronunciationError]:
+        from .scorer import phone_features
+
+        hard = {
+            e.target_index
+            for e in errors
+            if e.source == "alignment" and e.expected is not None and e.severity != "minor"
+        }
+        matched = {op.ref_index for op in ops if op.kind == "match"}
+        X = phone_features(
+            post,
+            tp,
+            segs,
+            [g.lpr for g in gop],
+            [g.gop_frame for g in gop],
+            [i in hard for i in range(len(tp))],
+            [i in matched for i in range(len(tp))],
+        )
+        if self.config.export_features:
+            for pr, row in zip(phones, X, strict=True):
+                pr.features = [float(v) for v in row]
+        if self.scorer is None:
+            return errors
+        learned = self.scorer.score(X)
+        gate = self.scorer.error_gate
+        for pr, sc in zip(phones, learned, strict=True):
+            pr.score = float(sc)
+        # keep a phone-level error only if the learned scorer agrees the phone is off
+        return [
+            e
+            for e in errors
+            if e.target_index is None
+            or e.expected is None
+            or e.severity == "minor"
+            or learned[e.target_index] < gate
+        ]
 
     def _phone_results(
         self,

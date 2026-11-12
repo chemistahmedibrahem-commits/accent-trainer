@@ -4,12 +4,14 @@ A good GA scoring model should (1) flag almost nothing on native speech and (2) 
 hear post-vocalic /r/ (car, sort, near), which espeak-labelled models tend to miss.
 
     python scripts/compare_models.py /data/libri/index.tsv model_id [model_id ...]
+    AT_SCORER_PATH=scorer.joblib python scripts/compare_models.py ...   # with a learned scorer
 """
 
 from __future__ import annotations
 
 import collections
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -28,7 +30,10 @@ def main() -> None:
         rows = [line.rstrip("\n").split("\t") for line in f]
     report = {}
     for mid in models:
-        eng = PronunciationEngine(Wav2Vec2PhonemeModel(mid), EngineConfig(formants=False, prosody=False))
+        scorer = os.environ.get("AT_SCORER_PATH") or None
+        eng = PronunciationEngine(
+            Wav2Vec2PhonemeModel(mid), EngineConfig(formants=False, prosody=False, scorer_path=scorer)
+        )
         n_ph = n_err = coda_r = coda_r_ok = 0
         codes: collections.Counter[str] = collections.Counter()
         t_model = audio_s = 0.0
