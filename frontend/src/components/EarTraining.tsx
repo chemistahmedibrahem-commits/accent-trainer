@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { api, type Content } from "../api";
+import { useEffect, useState } from "react";
+import { api, speak, type Content } from "../api";
 
 /** Minimal-pair perception test: hear one word (en-US TTS), pick which it was. */
 export function EarTraining() {
@@ -12,19 +12,7 @@ export function EarTraining() {
   useEffect(() => {
     api.content().then(setContent).catch(() => undefined);
   }, []);
-  const voice = useMemo(() => {
-    const vs = typeof speechSynthesis !== "undefined" ? speechSynthesis.getVoices() : [];
-    return vs.find((v) => v.lang === "en-US") ?? vs.find((v) => v.lang.startsWith("en"));
-  }, []);
-
-  const say = (w: string) => {
-    const u = new SpeechSynthesisUtterance(w);
-    u.lang = "en-US";
-    if (voice) u.voice = voice;
-    u.rate = 0.85;
-    speechSynthesis.cancel();
-    speechSynthesis.speak(u);
-  };
+  const say = (w: string) => void speak(w);
 
   const next = () => {
     const pairs = content?.minimal_pairs[contrast];

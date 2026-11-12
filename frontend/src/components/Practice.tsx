@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type Assessment, type Content, type ServerMessage } from "../api";
+import { api, speak, type Assessment, type Content, type ServerMessage } from "../api";
 import { MicStreamer } from "../audio/streamer";
 import { ResultView } from "./ResultView";
 
 type State = "idle" | "listening" | "speaking" | "processing";
 
-export function Practice({ user }: { user: string }) {
+export function Practice({ user, initialText }: { user: string; initialText?: string }) {
   const [content, setContent] = useState<Content>();
-  const [text, setText] = useState("I'd like a bottle of water.");
+  const [text, setText] = useState(initialText ?? "I'd like a bottle of water.");
+  useEffect(() => {
+    if (initialText) setText(initialText);
+  }, [initialText]);
   const [state, setState] = useState<State>("idle");
   const [level, setLevel] = useState(0);
-  const [result, setResult] = useState<Assessment & { latency_ms?: number }>();
+  const [result, setResult] = useState<Assessment & { latency_ms?: number; attempt_id?: number }>();
   const [recording, setRecording] = useState<string>();
   const [error, setError] = useState<string>();
   const streamer = useRef<MicStreamer>();
@@ -58,13 +61,7 @@ export function Practice({ user }: { user: string }) {
     }
   };
 
-  const listen = () => {
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = "en-US";
-    u.rate = 0.9;
-    speechSynthesis.cancel();
-    speechSynthesis.speak(u);
-  };
+  const listen = (rate = 1) => void speak(text, rate);
 
   const status: Record<State, string> = {
     idle: "Press Record, then read the sentence aloud. Recording stops automatically after you finish.",
@@ -92,7 +89,8 @@ export function Practice({ user }: { user: string }) {
         </div>
         <p className="target">{text}</p>
         <div className="row">
-          <button className="btn" onClick={listen}>▶ Listen</button>
+          <button className="btn" onClick={() => listen()}>▶ Listen</button>
+          <button className="btn" onClick={() => listen(0.75)}>▶ Slow</button>
           {state === "idle" ? (
             <button className="btn primary" onClick={start}>● Record</button>
           ) : (
@@ -103,7 +101,7 @@ export function Practice({ user }: { user: string }) {
         <p className="status">{status[state]}{result?.latency_ms != null && state === "idle" ? ` (analysed in ${Math.round(result.latency_ms)} ms)` : ""}</p>
         {error && <p className="bad">{error}</p>}
       </section>
-      {result && <ResultView result={result} recording={recording} />}
+      {result && <ResultView result={result} recording={recording} onPractice={setText} />}
     </>
   );
 }

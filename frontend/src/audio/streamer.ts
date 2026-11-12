@@ -67,7 +67,7 @@ export class MicStreamer {
     this.recorder?.stop();
     this.node?.disconnect();
     this.stream?.getTracks().forEach((t) => t.stop());
-    void this.ctx?.close();
+    if (this.ctx && this.ctx.state !== "closed") void this.ctx.close();
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: "stop" }));
   }
 

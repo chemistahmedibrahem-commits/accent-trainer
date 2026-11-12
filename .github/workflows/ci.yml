@@ -13,7 +13,7 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
-      - run: mypy accent_engine
+      - run: mypy accent_engine app trainer
       - run: pytest -q
       - run: python scripts/bench_latency.py
 

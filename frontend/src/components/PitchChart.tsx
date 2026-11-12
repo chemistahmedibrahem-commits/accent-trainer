@@ -104,8 +104,10 @@ export function PitchChart({ user, reference }: Props) {
       });
   }, [user, reference]);
 
+  const userVoiced = user.f0.some((v) => v != null);
   return (
     <div>
+      {!userVoiced && <p className="status">No voiced pitch was found in your recording — speak a little louder or closer to the mic.</p>}
       <div className="chart" ref={ref} />
       {reference && (
         <div className="legend">

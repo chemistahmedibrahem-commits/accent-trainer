@@ -1,12 +1,22 @@
 import { useState } from "react";
+import { Conversation } from "./components/Conversation";
+import { DashboardView } from "./components/DashboardView";
 import { EarTraining } from "./components/EarTraining";
 import { Practice } from "./components/Practice";
-import { ProgressView } from "./components/ProgressView";
+import { Today } from "./components/Today";
 
-type Tab = "practice" | "ear" | "progress";
+type Tab = "today" | "practice" | "conversation" | "ear" | "progress";
+const LABEL: Record<Tab, string> = {
+  today: "Today",
+  practice: "Practice",
+  conversation: "Conversation",
+  ear: "Ear training",
+  progress: "Progress",
+};
 
 export function App() {
   const [tab, setTab] = useState<Tab>("practice");
+  const [practiceText, setPracticeText] = useState<string>();
   const [user, setUser] = useState(() => {
     try {
       return localStorage.getItem("user") ?? "me";
@@ -22,22 +32,28 @@ export function App() {
       /* storage unavailable */
     }
   };
+  const practise = (text: string) => {
+    setPracticeText(text);
+    setTab("practice");
+  };
   return (
     <main>
       <header>
         <h1>American Accent Trainer</h1>
         <nav>
-          {(["practice", "ear", "progress"] as Tab[]).map((t) => (
+          {(Object.keys(LABEL) as Tab[]).map((t) => (
             <button key={t} aria-pressed={tab === t} onClick={() => setTab(t)}>
-              {{ practice: "Practice", ear: "Ear training", progress: "Progress" }[t]}
+              {LABEL[t]}
             </button>
           ))}
         </nav>
         <input type="text" value={user} onChange={(e) => changeUser(e.target.value)} aria-label="User name" style={{ maxWidth: 120, flex: "none" }} />
       </header>
-      {tab === "practice" && <Practice user={user} />}
+      {tab === "today" && <Today user={user} onPractice={practise} />}
+      {tab === "practice" && <Practice user={user} initialText={practiceText} />}
+      {tab === "conversation" && <Conversation user={user} />}
       {tab === "ear" && <EarTraining />}
-      {tab === "progress" && <ProgressView user={user} />}
+      {tab === "progress" && <DashboardView user={user} />}
     </main>
   );
 }

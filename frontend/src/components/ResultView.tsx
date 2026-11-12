@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, type Assessment, type VowelReference } from "../api";
 import { BAND_LABEL, band, fmt } from "../score";
 import { PitchChart } from "./PitchChart";
+import { CoachPanel } from "./CoachPanel";
 import { VowelChart } from "./VowelChart";
 
 const TILES: [keyof Assessment["scores"], string][] = [
@@ -12,7 +13,15 @@ const TILES: [keyof Assessment["scores"], string][] = [
   ["prosody", "Prosody"],
 ];
 
-export function ResultView({ result, recording }: { result: Assessment; recording?: string }) {
+export function ResultView({
+  result,
+  recording,
+  onPractice,
+}: {
+  result: Assessment & { attempt_id?: number };
+  recording?: string;
+  onPractice?: (text: string) => void;
+}) {
   const [vref, setVref] = useState<VowelReference>();
   useEffect(() => {
     api.vowelReference().then(setVref).catch(() => undefined);
@@ -71,8 +80,10 @@ export function ResultView({ result, recording }: { result: Assessment; recordin
         </div>
       </section>
 
+      {result.attempt_id != null && <CoachPanel attemptId={result.attempt_id} onPractice={onPractice} />}
+
       <section className="card">
-        <h2>What to work on</h2>
+        <h2>What the engine detected</h2>
         {result.errors.length === 0 ? (
           <p className="ok">✓ No pronunciation errors detected.</p>
         ) : (

@@ -92,3 +92,67 @@ export const api = {
   progress: (user: string) => get<Progress>(`/api/users/${encodeURIComponent(user)}/progress`),
   health: () => get<{ backend: string; model: string }>("/api/health"),
 };
+
+export interface CoachReply {
+  summary: string;
+  focus: { code: string; word: string; explanation: string; articulation: string }[];
+  drills: string[];
+  source: "llm" | "rules";
+  fallback_reason?: string;
+}
+
+export interface Drill {
+  kind: "perception" | "words" | "twister" | "stress_pairs";
+  skill: string;
+  label: string;
+  items: (string | string[])[];
+  reason: string;
+}
+
+export interface Dashboard {
+  user: string;
+  n_attempts: number;
+  skills: { skill: string; label: string; mastery: number; mastered: boolean; n_obs: number; correct_rate: number | null; due: string | null }[];
+  weaknesses: { skill: string; label: string; mastery: number; n_obs: number }[];
+  heatmap: { skill: string; label: string; week: string; n: number; correct_rate: number }[];
+  trend: { day: string; n: number; total: number | null; accuracy: number | null; fluency: number | null; prosody: number | null }[];
+}
+
+export interface ConversationTurn {
+  transcript: string;
+  reply: { text: string; source: string };
+  attempt_id: number | null;
+  assessment: Assessment | null;
+  feedback: CoachReply | null;
+}
+
+export const api2 = {
+  coach: (attemptId: number) => get<CoachReply>(`/api/attempts/${attemptId}/coach`),
+  plan: (user: string) => get<{ drills: Drill[] }>(`/api/users/${encodeURIComponent(user)}/plan`),
+  dashboard: (user: string) => get<Dashboard>(`/api/users/${encodeURIComponent(user)}/dashboard`),
+  scenarios: () => get<Record<string, { title: string; opener: string }>>("/api/conversation/scenarios"),
+  async turn(scenario: string, history: { role: string; text: string }[], user: string, wav: Blob): Promise<ConversationTurn> {
+    const fd = new FormData();
+    fd.append("scenario", scenario);
+    fd.append("history", JSON.stringify(history));
+    fd.append("user", user);
+    fd.append("audio", wav, "turn.wav");
+    const r = await fetch("/api/conversation/turn", { method: "POST", body: fd });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    return (await r.json()) as ConversationTurn;
+  },
+};
+
+/** Play American reference audio (server Piper TTS), falling back to the browser voice. */
+export async function speak(text: string, rate = 1): Promise<void> {
+  try {
+    const audio = new Audio(`/api/tts?text=${encodeURIComponent(text)}&rate=${rate}`);
+    await audio.play();
+  } catch {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "en-US";
+    u.rate = 0.9 * rate;
+    speechSynthesis.cancel();
+    speechSynthesis.speak(u);
+  }
+}

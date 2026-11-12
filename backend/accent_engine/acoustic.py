@@ -186,6 +186,8 @@ TIMIT_TO_ARPABET: dict[str, str | tuple[str, str]] = {
     "em": ("AH", "M"),
     "en": ("AH", "N"),
     "dx": "DX",
+    "ts": ("T", "S"),
+    "o": "OW",
     "q": "Q",
 }
 EXTRA_IPA: dict[str, str] = {

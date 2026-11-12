@@ -437,7 +437,7 @@ def build_target(lexicon: Sequence[WordPron], choice: Sequence[int] | None = Non
                 and ((same_word and nxt[1] == 0) or (not same_word and pos == "final"))
             ):
                 # [d]-like taps are the same gesture; [t] is accepted but noted (FLAP_T)
-                surface, alts, allo = "DX", frozenset({ph, "D"}), "flap"
+                surface, alts, allo = "DX", frozenset({ph, "D", "DH"}), "flap"
         if ph == "L" and (nxt is None or not is_vowel(nxt[0]) or nxt[2] != wi):
             allo = "dark_l"
         # Pre-coda-/r/ neutralisation: in GA "here/beer", "more/four", "poor/tour", "there/care"
