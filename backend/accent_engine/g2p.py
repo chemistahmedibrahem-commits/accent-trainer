@@ -452,6 +452,8 @@ def build_target(lexicon: Sequence[WordPron], choice: Sequence[int] | None = Non
             alts = alts | _PRE_R_MERGER[ph]
         if is_vowel(ph) and st == 0 and ph in _REDUCIBLE:
             alts = alts | (_REDUCED - {ph})  # GA reduced vowels: [ə] and [ɪ] (roses, delicate)
+        if ph == "ER" and st == 0:
+            alts = alts | {"AH"}  # measured: native [ɚ] is labelled AH 34 % of the time by the phone model
         if ph in _COT_CAUGHT:
             alts = alts | _COT_CAUGHT[ph]  # cot–caught merger, majority of GA speakers
 

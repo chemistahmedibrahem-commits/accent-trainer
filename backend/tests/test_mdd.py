@@ -49,7 +49,11 @@ def test_engine_reports_mdd_flags_with_diagnosis() -> None:
 
 def test_strictness_thresholds() -> None:
     m = MDDModel(_Stub(), 0.6, {}, {"balanced": 0.6, "gentle": 0.8})
-    assert m.threshold_for(None) == 0.6
-    assert m.threshold_for("gentle") == 0.8
+    # default "focused": sensitive for documented Arabic-L1 transfer errors, conservative otherwise
+    assert m.threshold_for(None, "TH_SUB") == 0.6
+    assert m.threshold_for("focused", "P_B") == 0.6
+    assert m.threshold_for(None, "FINAL_DEVOICING") == 0.8
+    assert m.threshold_for("balanced", "FINAL_DEVOICING") == 0.6
+    assert m.threshold_for("gentle", "P_B") == 0.8
     assert m.threshold_for("unknown") == 0.6
     assert MDDModel(_Stub(), 0.5, {}).threshold_for("gentle") == 0.5  # older bundles: one threshold

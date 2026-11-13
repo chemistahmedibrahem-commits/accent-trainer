@@ -153,14 +153,21 @@ def validate(reply: dict[str, Any], dg: dict[str, Any]) -> list[str]:
 def rule_based(dg: dict[str, Any]) -> dict[str, Any]:
     s = dg["scores"]
     total = s.get("total")
-    if not dg["errors"] and not dg["stress_errors"]:
-        summary = "Clear and accurate — no pronunciation errors were detected in this sentence."
+    major = [e for e in dg["errors"] if e["severity"] != "minor"]
+    minor = [e for e in dg["errors"] if e["severity"] == "minor"]
+    n_stress = len(dg["stress_errors"])
+    summary = f"Overall {total}. " if total is not None else ""
+    if not major and not n_stress:
+        summary += "Clear and accurate — no pronunciation errors were detected in this sentence."
+        if minor:
+            summary += " A small style note is below."
     else:
-        n = len({e["code"] for e in dg["errors"]})
-        summary = f"Overall {total}. " if total is not None else ""
-        summary += (
-            f"The engine found {len(dg['errors'])} issue(s) of {n} kind(s); start with the first one below."
-        )
+        parts = []
+        if major:
+            parts.append(f"{len(major)} sound{'s' if len(major) > 1 else ''} to fix")
+        if n_stress:
+            parts.append(f"{n_stress} word-stress issue{'s' if n_stress > 1 else ''}")
+        summary += f"Found {' and '.join(parts)}; start with the first one below."
     focus, seen = [], set()
     for e in dg["errors"]:
         if e["code"] in seen:

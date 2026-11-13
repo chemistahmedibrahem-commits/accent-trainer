@@ -21,6 +21,8 @@ from .scorer import CANDIDATES, FEATURE_NAMES
 
 MDD_FEATURES: tuple[str, ...] = (*FEATURE_NAMES, "so762_score")
 _LPR0 = FEATURE_NAMES.index(f"lpr_vs_{CANDIDATES[0]}")
+# documented Egyptian-Arabic transfer errors: reported with the sensitive threshold under "focused"
+CORE_CODES = frozenset({"P_B", "TH_SUB", "DH_SUB", "V_F", "RHOTIC"})
 
 
 @dataclass
@@ -30,9 +32,13 @@ class MDDModel:
     meta: dict[str, Any]
     thresholds: dict[str, float] | None = None  # e.g. {"balanced": .., "gentle": ..}
 
-    def threshold_for(self, strictness: str | None) -> float:
-        if strictness and self.thresholds and strictness in self.thresholds:
-            return float(self.thresholds[strictness])
+    def threshold_for(self, strictness: str | None, code: str | None = None) -> float:
+        """ "focused" (default): balanced threshold for core Arabic-L1 errors, gentle otherwise."""
+        th = self.thresholds or {}
+        if strictness in (None, "focused") and "gentle" in th:
+            return float(th["balanced"] if code in CORE_CODES else th["gentle"])
+        if strictness and strictness in th:
+            return float(th[strictness])
         return self.threshold
 
     @classmethod

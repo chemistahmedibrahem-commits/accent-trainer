@@ -119,7 +119,7 @@ async def api_assess(
     text: str = Form(...),
     user: str = Form("default"),
     mode: str = Form("repeat"),
-    strictness: str = Form("balanced"),
+    strictness: str = Form("focused"),
     audio: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -338,7 +338,7 @@ async def report(name: str, fmt: str, db: AsyncSession = Depends(get_db)) -> Res
 # --------------------------------------------------------------------------- WebSocket
 #
 # Protocol (client → server):
-#   {"type": "start", "text": "...", "user": "name", "mode": "repeat", "strictness": "balanced"|"gentle"}   (text optional until speech ends)
+#   {"type": "start", "text": "...", "user": "name", "mode": "repeat", "strictness": "focused"|"balanced"|"gentle"}   (text optional until speech ends)
 #   binary frames: little-endian float32 or int16 PCM, mono, 16 kHz, any chunk size (20–40 ms typical)
 #   {"type": "format", "dtype": "int16" | "float32"}
 #   {"type": "stop"}  → force end of utterance
@@ -355,7 +355,7 @@ async def stream(ws: WebSocket) -> None:
     text: str | None = None
     user_name = "default"
     mode = "repeat"
-    strictness = "balanced"
+    strictness = "focused"
     dtype: type[np.floating[Any]] | type[np.integer[Any]] = np.float32
     level_every = 3  # frames of 32 ms → ~100 ms
     n_frames = 0

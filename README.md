@@ -30,6 +30,7 @@ docker-compose.yml (+ docker-compose.cpu.yml)   frontend · api · worker · pos
 | Acoustic model | `acoustic.py` | One ARPAbet posterior interface over any HF CTC phone model. It handles espeak-IPA, TIMIT/ARPAbet, and L2 vocabularies with `_err` tokens. Two-phone tokens (`ɑːɹ`, `el`, `ts`, …) are split exactly by frame doubling. Classes a model lacks borrow an alias's posterior. |
 | Recognition & alignment | `ctc.py`, `alignment.py` | NumPy CTC (greedy, Viterbi forced alignment, batched forward). Needleman–Wunsch with articulatory costs. |
 | GOP | `gop.py` | GOP-LPR (alignment-free, GOP-AF style) in a ±2-phone window (linear time), plus frame GOP |
+| **Mispronunciation detector** | `mdd.py` | Decides which errors are *reported* (see below); trained on L2-ARCTIC with native negatives |
 | **Learned scorer** | `scorer.py` | Gradient-boosted regressor trained on speechocean762 **train**. Features: the LPR vector against every phone and against deletion, posterior statistics, the `_err`-token mass, duration, identity/context, and speaker-normalised vowel quality. It replaces calibrated GOP and gates error reports. |
 | Errors | `errors.py` | Arabic-L1 taxonomy: P_B, V_F, TH_SUB, DH_SUB, IH_IY, UH_UW, AE_EH, SCHWA_REDUCTION, RHOTIC, FLAP_T, DARK_L, EPENTHESIS, FINAL_DEVOICING (+ generic sub/del/ins) |
 | Vowels | `formants.py`, `vowel_space.py` | Praat Burg formants; Lobanov/Nearey normalisation from an hVd calibration; Hillenbrand (1995) GA targets |
@@ -47,9 +48,58 @@ The spec suggested `facebook/wav2vec2-xlsr-53-espeak-cv-ft`. Measured on native 
 | **slplab L2-English (default)** | **95%** | 0.29 |
 | speech31 WavLM | 92% | 0.15 |
 
-### Accuracy on speechocean762 (held-out **test** split, human phone ratings 0–2)
+### Accuracy on speechocean762 (held-out **test** split: 2,500 utterances, 46,781 phones, unseen speakers)
 
-RESULTS_TABLE
+The scorer was trained on the train split only. Its error threshold was chosen from speaker-grouped out-of-fold predictions on train. The acoustic model was fine-tuned on Korean-English ETRI data, so it has never seen this corpus.
+
+| Pearson r with human ratings | Phone | Utt. accuracy | Utt. fluency | Utt. prosodic | Utt. total |
+|---|---|---|---|---|---|
+| Raw GOP-LPR | 0.422 | – | – | – | – |
+| Logistic-calibrated GOP | 0.474 | 0.63 | 0.61 | −0.05 | 0.60 |
+| **Learned scorer (shipped)** | **0.639** | **0.74** | **0.80** | **0.78** | **0.76** |
+| *GOPT (Gong et al. 2022), for reference* | *0.612* | *0.714* | *0.753* | *0.760* | *0.742* |
+
+The spec's target of phone-level Pearson ≥ 0.6 is met. The hand-built prosody score did not track human prosody ratings (r ≈ 0), so the shipped utterance scores come from the learned regressors.
+
+### What gets reported: the mispronunciation detector (`accent_engine/mdd.py`)
+
+Scoring and *telling the learner what is wrong* are separate jobs. A threshold on the speechocean762 scorer (graded, mostly Mandarin-L1 labels) caught only 14% of the annotated errors of Arabic speakers. So which errors get reported is decided by a classifier trained on **L2-ARCTIC's categorical annotations** (24 speakers, 6 L1s). It also uses **910 utterances from 7 native US speakers as negatives**, so that native-like variation isn't "corrected". It has three strictness levels:
+
+* **focused (default):** sensitive for the documented Egyptian-Arabic transfer errors (P→B, TH, DH, V→F, rhotics), conservative for everything else
+* **thorough:** the F1-optimal threshold for all errors
+* **gentle:** only the surest corrections
+
+**Arabic L1, leave-one-speaker-out.** Each of ABA, SKA, YBAA and ZHAA is scored by a model that never heard them. Thresholds were picked on the training speakers only. 19,558 phones; 1,861 (9.5%) were annotated as wrong.
+
+| Detector | Precision | Recall | Flag rate |
+|---|---|---|---|
+| Alignment/GOP baseline | 0.30 | 0.39 | 12.4% |
+| **focused (default)** | **0.40** | **0.39** | **9.4%** |
+| thorough | 0.31 | 0.61 | 18.5% |
+| gentle | 0.44 | 0.23 | 5.0% |
+
+Recall in focused mode for the core Arabic-L1 errors: **DH 96%** (baseline 32%), **TH 95%**, **P→B 78%**, **rhotics 69%**, V→F 29%. Diagnosis accuracy (correct "it sounded like …" phone) is 53%.
+
+**False alarms on native American speech** (held-out speakers, `scripts/compare_models.py`). Counts are errors per 100 phones and include minor "flap T not used" style notes; careful read speech often doesn't flap.
+
+| | focused | thorough | gentle |
+|---|---|---|---|
+| CMU ARCTIC `bdl` + `clb` (US male + female, 120 utts) | 3.5 | 6.7 | 2.4 |
+| LibriSpeech speaker 1272 (73 utts) | 6.3 | 13.3 | 4.7 |
+
+Coda-/r/ recall on native speech is 98.4% and 95.1%.
+
+Two measured artefacts are handled explicitly. (1) The phone model labels native unstressed [ɚ] as AH 34% of the time, so unstressed ER accepts AH; stressed ER ("bird", "heard") is still checked. (2) The dark-L F2 heuristic fired on 13% of native L's, so it is off by default (`EngineConfig.dark_l_check`).
+
+### Latency (CPU, 4 cores, no GPU)
+
+| Path | Time |
+|---|---|
+| Acoustic model (wav2vec2-large) | ~0.43 s per 3.5 s utterance (RTF ≈ 0.11) |
+| Everything after the model (alignment, GOP, scorer, detector, formants, prosody, TTS reference) | ~0.25 s |
+| WebSocket: end of speech → result (real Arabic-L1 utterance) | **0.80 s** |
+
+The spec's < 300 ms needs a GPU for the forward pass: wav2vec2-large is typically 30–60 ms on a modern GPU, and fp16 is enabled automatically on CUDA. The rest of the pipeline already fits inside that budget.
 
 ## The coach never invents scores
 
@@ -67,8 +117,7 @@ RESULTS_TABLE
 ```bash
 cd backend && python -m venv ../.venv && . ../.venv/bin/activate
 pip install -e ".[dev,ml,speech]"
-AT_ACOUSTIC_MODEL_ID=slplab/wav2vec2-large-robust-L2-english-phoneme-recognition \
-AT_SCORER_PATH=models/scorer_slplab.joblib uvicorn app.main:app
+uvicorn app.main:app        # defaults: slplab model + shipped scorer + detector + Piper reference voice
 ```
 
 ```bash
@@ -84,8 +133,10 @@ Full stack: `docker compose up --build` (GPU) or `docker compose -f docker-compo
 # speechocean762 (openslr.org/101): extract features (posteriors cached), then fit
 python scripts/eval_speechocean.py extract --root DATA/speechocean762 --model MODEL --cache-dir cache --out feats.jsonl
 python scripts/eval_speechocean.py train-scorer --feats feats.jsonl --model-id MODEL --out models/scorer.joblib
-# L2-ARCTIC Arabic-L1 speakers: mispronunciation detection & diagnosis
-python scripts/eval_l2arctic.py --root DATA/l2arctic --model MODEL --scorer models/scorer.joblib
+# mispronunciation detector: L2-ARCTIC (+ native negatives), leave-one-Arabic-speaker-out
+python scripts/train_mdd.py extract --root DATA/l2arctic --model MODEL --cache-dir cache --out mdd.jsonl
+python scripts/train_mdd.py extract --root DATA/l2arctic --model MODEL --cache-dir cache --out mdd.jsonl --native-index native.tsv
+python scripts/train_mdd.py train --feats mdd.jsonl --scorer models/scorer.joblib --out models/mdd.joblib
 # native speech false-positive rate + coda-/r/ recall
 python scripts/compare_models.py DATA/native/index.tsv MODEL [MODEL...]
 python scripts/bench_latency.py
@@ -98,4 +149,22 @@ cd backend && ruff check . && ruff format --check . && mypy accent_engine app tr
 cd frontend && npm run lint && npm run typecheck && npm test && npm run build
 ```
 
-STATUS_SECTION
+## Status
+
+| Build-plan step | State |
+|---|---|
+| 1. Monorepo, Compose, CI | ✅ Compose files validated. Images not built here (no Docker daemon in the dev sandbox). |
+| 2. Audio capture + streaming | ✅ Verified in headless Chromium (fake mic) and with real speech over the WebSocket |
+| 3. G2P, alignment, GOP, tests | ✅ Real model, 93 backend tests |
+| 4. Formants + prosody | ✅ |
+| 5. Visualisations | ✅ Pitch vs native reference, vowel chart, phone chips, heatmap, trends |
+| 6. Coach + conversation | ✅ Rule-based coach verified end to end. Claude path tested with a fake client (no API key here). Whisper + Piper verified. |
+| 7. Adaptive engine, dashboard, evaluation | ✅ BKT + FSRS + drill generation, CSV/PDF, speechocean762 (target met), L2-ARCTIC, native checks |
+
+### Known limitations
+
+* **Precision for Arabic speakers is ~0.4** at the default setting. L2-ARCTIC annotators mark only clear categorical errors, so many "false" flags are accented-but-acceptable phones. Some are real misses by the annotators, and some are model errors. Learners can switch to *gentle*.
+* **Vowel-quality errors are the weakest category** (AE/EH, IH/IY, UH/UW recall 0–30%). Categorical phone models hear the nearest phoneme. The speaker-normalised formant features help the *score* more than the detector. A per-user vowel calibration (the hVd session) improves both.
+* **The intonation score** compares against a single Piper TTS rendition. The utterance-level prosody score shipped is the learned one (r = 0.78 with human prosody ratings); the raw contour similarity is shown for visualisation only.
+* Both trained models are specific to the slplab acoustic model's features. Changing `AT_ACOUSTIC_MODEL_ID` requires re-running `eval_speechocean.py` and `train_mdd.py`. The engine raises an error if the scorer was trained for a different acoustic model.
+* Model and dataset licences: speechocean762 is Apache-2.0 and L2-ARCTIC is CC BY-NC 4.0, so the shipped detector is **for non-commercial use** unless it is retrained on other data. CMU ARCTIC is free to use. Check the slplab model card before commercial use.

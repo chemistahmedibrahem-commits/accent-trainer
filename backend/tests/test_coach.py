@@ -90,3 +90,14 @@ def test_llm_path_validated(invent: bool) -> None:
         assert out["source"] == "rules" and out["fallback_reason"] == "validation"
     else:
         assert out["source"] == "llm" and out["summary"] == "Nice try."
+
+
+def test_summary_wording_counts_sounds_and_stress() -> None:
+    dg = coach.digest(result({0: "S"}))
+    assert "1 sound to fix" in coach.rule_based(dg)["summary"]
+    dg["stress_errors"] = [{"word": "record", "expected_syllable": 1, "stressed_syllable": 2}]
+    assert "1 word-stress issue" in coach.rule_based(dg)["summary"]
+    dg2 = coach.digest(result())
+    dg2["stress_errors"] = [{"word": "record", "expected_syllable": 1, "stressed_syllable": 2}]
+    s = coach.rule_based(dg2)["summary"]
+    assert "word-stress" in s and "no pronunciation errors" not in s

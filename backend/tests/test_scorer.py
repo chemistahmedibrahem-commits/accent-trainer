@@ -86,3 +86,19 @@ def test_shipped_scorer_integrates_with_engine() -> None:
     d2 = r2.to_dict()
     assert d2["words"][0]["phones"][0]["score"] < r["words"][0]["phones"][0]["score"]
     assert ("TH_SUB", "think") in {(e["code"], e["word"]) for e in d2["errors"]}
+
+
+def test_scorer_refuses_a_different_acoustic_model() -> None:
+    from pathlib import Path
+
+    import pytest
+
+    from accent_engine import EngineConfig, PronunciationEngine
+
+    model = Path(__file__).resolve().parents[1] / "models" / "scorer_slplab.joblib"
+    if not model.exists():
+        pytest.skip("scorer not shipped")
+    other = SyntheticAcousticModel(["AH"])
+    other.name = "facebook/some-other-model"
+    with pytest.raises(ValueError, match="retrain"):
+        PronunciationEngine(other, EngineConfig(scorer_path=str(model)))

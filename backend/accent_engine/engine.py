@@ -35,6 +35,7 @@ class EngineConfig:
     default_gender: Literal["male", "female"] = "male"
     pause_min_s: float = 0.25
     scorer_path: str | None = None  # learned phone scorer (joblib); None → calibrated GOP
+    dark_l_check: bool = False  # F2 heuristic: 13 % false alarms on native speakers → opt-in
     mdd_path: str | None = None  # mispronunciation detector (needs scorer_path); decides reported errors
     export_features: bool = False  # attach per-phone scorer features (for training/eval)
 
@@ -166,6 +167,13 @@ class PronunciationEngine:
             from .scorer import LearnedScorer
 
             self.scorer = LearnedScorer.load(self.config.scorer_path)
+            trained_for = self.scorer.meta.get("acoustic_model")
+            name = getattr(acoustic, "name", "")
+            if trained_for and name not in (trained_for, "synthetic"):
+                raise ValueError(
+                    f"scorer was trained on features of {trained_for!r}, not {name!r}: "
+                    "retrain it (scripts/eval_speechocean.py) or unset the scorer path"
+                )
         self.mdd = None
         if self.config.mdd_path and self.scorer is not None:
             from .mdd import MDDModel
@@ -338,22 +346,29 @@ class PronunciationEngine:
         from .mdd import likely_realisation
 
         p_err = self.mdd.proba(X, learned)
-        flagged = p_err >= self.mdd.threshold_for(strictness)
-        out = keep_always + [e for e in phone_errs if flagged[e.target_index]]
+
+        def over(i: int, code: str) -> bool:
+            return bool(p_err[i] >= self.mdd.threshold_for(strictness, code))  # type: ignore[union-attr]
+
+        out = keep_always + [
+            e for e in phone_errs if e.target_index is not None and over(e.target_index, e.code)
+        ]
         have = {e.target_index for e in out if e.expected is not None and e.severity != "minor"}
-        for i in np.nonzero(flagged)[0]:
-            if int(i) in have:
+        candidates = np.nonzero(
+            p_err >= min(self.mdd.threshold_for(strictness, "P_B"), self.mdd.threshold_for(strictness, None))
+        )[0]
+        for i in (int(k) for k in candidates):
+            if i in have or i in {e.target_index for e in phone_errs}:
                 continue
-            t = tp[int(i)]
-            real = likely_realisation(X[int(i)], t.phone)
+            t = tp[i]
+            real = likely_realisation(X[i], t.phone)
             code = (
                 ("RHOTIC" if t.phone in ("R", "ER") else "DELETION")
                 if real == "<del>"
                 else classify_substitution(t, real)
             )
-            out.append(
-                PronunciationError(code, int(i), t.word_index, t.phone, real, "gop", float(p_err[int(i)]))
-            )
+            if over(i, code):
+                out.append(PronunciationError(code, i, t.word_index, t.phone, real, "gop", float(p_err[i])))
         out.sort(key=lambda e: (e.word_index, e.target_index if e.target_index is not None else -1))
         return self._cap_reported(out, phones)
 
@@ -425,7 +440,7 @@ class PronunciationEngine:
                         vs = score_vowel(t.phone, fm.f1, fm.f2, norm)
                         if vs is not None:
                             pr.vowel_score = asdict(vs)
-            elif t.allophone == "dark_l":
+            elif t.allophone == "dark_l" and self.config.dark_l_check:
                 fm = tracker.measure(pr.start, pr.end, portion=0.6)
                 if fm.valid:
                     pr.formants = {"f1": fm.f1, "f2": fm.f2, "f3": fm.f3}

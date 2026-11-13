@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, speak, type Assessment, type Content, type ServerMessage } from "../api";
-import { MicStreamer } from "../audio/streamer";
+import { MicStreamer, type Strictness } from "../audio/streamer";
 import { ResultView } from "./ResultView";
 
 type State = "idle" | "listening" | "speaking" | "processing";
@@ -16,14 +16,15 @@ export function Practice({ user, initialText }: { user: string; initialText?: st
   const [result, setResult] = useState<Assessment & { latency_ms?: number; attempt_id?: number }>();
   const [recording, setRecording] = useState<string>();
   const [error, setError] = useState<string>();
-  const [strictness, setStrictness] = useState<"balanced" | "gentle">(() => {
+  const [strictness, setStrictness] = useState<Strictness>(() => {
     try {
-      return localStorage.getItem("strictness") === "gentle" ? "gentle" : "balanced";
+      const v = localStorage.getItem("strictness");
+      return v === "gentle" || v === "balanced" ? v : "focused";
     } catch {
-      return "balanced";
+      return "focused";
     }
   });
-  const changeStrictness = (v: "balanced" | "gentle") => {
+  const changeStrictness = (v: Strictness) => {
     setStrictness(v);
     try {
       localStorage.setItem("strictness", v);
@@ -114,11 +115,12 @@ export function Practice({ user, initialText }: { user: string; initialText?: st
           <select
             aria-label="Feedback strictness"
             value={strictness}
-            onChange={(e) => changeStrictness(e.target.value as "balanced" | "gentle")}
+            onChange={(e) => changeStrictness(e.target.value as Strictness)}
             style={{ flex: "none", width: "auto" }}
-            title="Gentle: fewer, surer corrections. Balanced: catches more errors."
+            title="Focused: catches Arabic-speaker errors (p/b, th, v/f, r) and stays quiet about the rest. Balanced: catches more of everything. Gentle: only the surest corrections."
           >
-            <option value="balanced">Balanced feedback</option>
+            <option value="focused">Focused feedback</option>
+            <option value="balanced">Thorough feedback</option>
             <option value="gentle">Gentle feedback</option>
           </select>
           <div className="level" aria-hidden><div style={{ width: `${state === "idle" ? 0 : level * 100}%` }} /></div>

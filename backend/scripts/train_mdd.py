@@ -34,6 +34,7 @@ from accent_engine.alignment import align
 from accent_engine.g2p import build_target, lexicon_for
 
 ARABIC = ("ABA", "SKA", "YBAA", "ZHAA")
+CORE_CATEGORIES = {"P_B", "TH", "DH", "V_F", "rhotic"}  # mirrors accent_engine.mdd.CORE_CODES
 GENTLE_PRECISION = 0.60  # "gentle" feedback: fewer, surer corrections
 
 
@@ -211,7 +212,7 @@ def train(args: argparse.Namespace) -> None:
         "error_rate": float(y.mean()),
         "loso_arabic": {},
     }
-    agg_pred, agg_base, agg_gold, agg_cat, agg_gentle, agg_proba = [], [], [], [], [], []
+    agg_pred, agg_base, agg_gold, agg_cat, agg_gentle, agg_proba, agg_focused = [], [], [], [], [], [], []
     diag_ok = diag_n = 0
     for held in ARABIC:
         tr, te = spk != held, spk == held
@@ -229,6 +230,22 @@ def train(args: argparse.Namespace) -> None:
         }
         agg_gentle.append(proba >= thrs["gentle"])
         agg_proba.append(proba)
+        # "focused": balanced threshold where the diagnosed error is a core Arabic-L1 pattern
+        held_rows_ = [p for s_, p in rows if s_ == held]
+        core = np.array(
+            [
+                category(
+                    p["our_phone"],
+                    p["baseline_diag"] or likely_realisation(np.asarray(f[:-1]), p["our_phone"]),
+                    "s",
+                )
+                in CORE_CATEGORIES
+                for p, f in zip(held_rows_, Xa[te], strict=True)
+            ]
+        )
+        focused = np.where(core, proba >= thrs["balanced"], proba >= thrs["gentle"])
+        report["loso_arabic"][held]["focused"] = _prf(focused, y[te])
+        agg_focused.append(focused)
         agg_pred.append(pred)
         agg_base.append(base[te])
         agg_gold.append(y[te])
@@ -250,6 +267,7 @@ def train(args: argparse.Namespace) -> None:
     report["arabic_overall"] = {
         "model": _prf(P, G),
         "gentle": _prf(np.concatenate(agg_gentle), G),
+        "focused": _prf(np.concatenate(agg_focused), G),
         "baseline": _prf(B, G),
         "diagnosis_accuracy": diag_ok / max(diag_n, 1),
     }
@@ -257,6 +275,7 @@ def train(args: argparse.Namespace) -> None:
         c: {
             "n": int((cats == c).sum()),
             "model": float(P[cats == c].mean()),
+            "focused": float(np.concatenate(agg_focused)[cats == c].mean()),
             "baseline": float(B[cats == c].mean()),
         }
         for c in sorted(set(agg_cat) - {""})

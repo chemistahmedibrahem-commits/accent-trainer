@@ -1,0 +1,307 @@
+{
+  "n_phones": 145658,
+  "error_rate": 0.11783767455271939,
+  "loso_arabic": {
+    "ABA": {
+      "model": {
+        "precision": 0.2606837606837607,
+        "recall": 0.710955710955711,
+        "f1": 0.38148843026891815,
+        "flag_rate": 0.23877551020408164
+      },
+      "gentle": {
+        "precision": 0.3190348525469169,
+        "recall": 0.2773892773892774,
+        "f1": 0.29675810473815456,
+        "flag_rate": 0.07612244897959183
+      },
+      "baseline": {
+        "precision": 0.29078947368421054,
+        "recall": 0.5151515151515151,
+        "f1": 0.3717409587888983,
+        "flag_rate": 0.15510204081632653
+      },
+      "thresholds": {
+        "balanced": 0.6749999999999998,
+        "gentle": 0.8499999999999999
+      },
+      "focused": {
+        "precision": 0.3748006379585327,
+        "recall": 0.5477855477855478,
+        "f1": 0.44507575757575757,
+        "flag_rate": 0.1279591836734694
+      }
+    },
+    "SKA": {
+      "model": {
+        "precision": 0.3787575150300601,
+        "recall": 0.6206896551724138,
+        "f1": 0.4704418170504045,
+        "flag_rate": 0.2036319118547235
+      },
+      "gentle": {
+        "precision": 0.5492957746478874,
+        "recall": 0.2561576354679803,
+        "f1": 0.34938409854423297,
+        "flag_rate": 0.05794735768210569
+      },
+      "baseline": {
+        "precision": 0.3398773006134969,
+        "recall": 0.4548440065681445,
+        "f1": 0.38904494382022464,
+        "flag_rate": 0.16629259334829627
+      },
+      "thresholds": {
+        "balanced": 0.7,
+        "gentle": 0.8749999999999998
+      },
+      "focused": {
+        "precision": 0.49899396378269617,
+        "recall": 0.4072249589490969,
+        "f1": 0.4484629294755877,
+        "flag_rate": 0.10140787594368496
+      }
+    },
+    "YBAA": {
+      "model": {
+        "precision": 0.21935483870967742,
+        "recall": 0.5295950155763239,
+        "f1": 0.3102189781021898,
+        "flag_rate": 0.1594978390615353
+      },
+      "gentle": {
+        "precision": 0.36477987421383645,
+        "recall": 0.1806853582554517,
+        "f1": 0.24166666666666667,
+        "flag_rate": 0.032722782465527886
+      },
+      "baseline": {
+        "precision": 0.23076923076923078,
+        "recall": 0.38317757009345793,
+        "f1": 0.28805620608899296,
+        "flag_rate": 0.10969335254167524
+      },
+      "thresholds": {
+        "balanced": 0.7,
+        "gentle": 0.8749999999999998
+      },
+      "focused": {
+        "precision": 0.30183727034120733,
+        "recall": 0.3582554517133956,
+        "f1": 0.32763532763532766,
+        "flag_rate": 0.0784111957192838
+      }
+    },
+    "ZHAA": {
+      "model": {
+        "precision": 0.4085545722713864,
+        "recall": 0.5517928286852589,
+        "f1": 0.4694915254237288,
+        "flag_rate": 0.1384238464679461
+      },
+      "gentle": {
+        "precision": 0.5741935483870968,
+        "recall": 0.17729083665338646,
+        "f1": 0.2709284627092846,
+        "flag_rate": 0.03164556962025317
+      },
+      "baseline": {
+        "precision": 0.3322884012539185,
+        "recall": 0.21115537848605578,
+        "f1": 0.25822168087697933,
+        "flag_rate": 0.06512862392813393
+      },
+      "thresholds": {
+        "balanced": 0.6749999999999998,
+        "gentle": 0.8749999999999998
+      },
+      "focused": {
+        "precision": 0.40923076923076923,
+        "recall": 0.2649402390438247,
+        "f1": 0.3216444981862152,
+        "flag_rate": 0.06635361371988567
+      }
+    }
+  },
+  "arabic_pr_curve": [
+    {
+      "threshold": 0.5,
+      "precision": 0.239,
+      "recall": 0.795,
+      "f1": 0.368,
+      "flag_rate": 0.316
+    },
+    {
+      "threshold": 0.55,
+      "precision": 0.254,
+      "recall": 0.756,
+      "f1": 0.38,
+      "flag_rate": 0.283
+    },
+    {
+      "threshold": 0.6000000000000001,
+      "precision": 0.271,
+      "recall": 0.71,
+      "f1": 0.392,
+      "flag_rate": 0.249
+    },
+    {
+      "threshold": 0.6500000000000001,
+      "precision": 0.294,
+      "recall": 0.662,
+      "f1": 0.407,
+      "flag_rate": 0.214
+    },
+    {
+      "threshold": 0.7000000000000002,
+      "precision": 0.32,
+      "recall": 0.593,
+      "f1": 0.415,
+      "flag_rate": 0.177
+    },
+    {
+      "threshold": 0.7500000000000002,
+      "precision": 0.341,
+      "recall": 0.499,
+      "f1": 0.405,
+      "flag_rate": 0.139
+    },
+    {
+      "threshold": 0.8000000000000003,
+      "precision": 0.367,
+      "recall": 0.383,
+      "f1": 0.375,
+      "flag_rate": 0.099
+    },
+    {
+      "threshold": 0.8500000000000003,
+      "precision": 0.412,
+      "recall": 0.275,
+      "f1": 0.33,
+      "flag_rate": 0.064
+    },
+    {
+      "threshold": 0.9000000000000004,
+      "precision": 0.497,
+      "recall": 0.139,
+      "f1": 0.217,
+      "flag_rate": 0.027
+    },
+    {
+      "threshold": 0.9500000000000004,
+      "precision": 0.602,
+      "recall": 0.027,
+      "f1": 0.051,
+      "flag_rate": 0.004
+    }
+  ],
+  "arabic_overall": {
+    "model": {
+      "precision": 0.31206848936757803,
+      "recall": 0.6072004298764105,
+      "f1": 0.4122582998905509,
+      "flag_rate": 0.1851416300235198
+    },
+    "gentle": {
+      "precision": 0.43460350154479915,
+      "recall": 0.22675980655561526,
+      "f1": 0.2980225988700565,
+      "flag_rate": 0.049647203190510275
+    },
+    "focused": {
+      "precision": 0.3994535519125683,
+      "recall": 0.39279957012358946,
+      "f1": 0.396098618260634,
+      "flag_rate": 0.09356784947336129
+    },
+    "baseline": {
+      "precision": 0.29954676555418214,
+      "recall": 0.3906501880709296,
+      "f1": 0.33908582089552236,
+      "flag_rate": 0.12409244299008078
+    },
+    "diagnosis_accuracy": 0.5293532338308458
+  },
+  "arabic_recall_by_category": {
+    "AE_EH": {
+      "n": 7,
+      "model": 0.0,
+      "focused": 0.0,
+      "baseline": 0.0
+    },
+    "DH": {
+      "n": 118,
+      "model": 0.9830508474576272,
+      "focused": 0.9576271186440678,
+      "baseline": 0.3220338983050847
+    },
+    "IH_IY": {
+      "n": 10,
+      "model": 0.4,
+      "focused": 0.0,
+      "baseline": 0.5
+    },
+    "P_B": {
+      "n": 101,
+      "model": 0.8316831683168316,
+      "focused": 0.7821782178217822,
+      "baseline": 0.7029702970297029
+    },
+    "TH": {
+      "n": 20,
+      "model": 1.0,
+      "focused": 0.95,
+      "baseline": 0.85
+    },
+    "UH_UW": {
+      "n": 7,
+      "model": 0.14285714285714285,
+      "focused": 0.14285714285714285,
+      "baseline": 0.2857142857142857
+    },
+    "V_F": {
+      "n": 45,
+      "model": 0.4666666666666667,
+      "focused": 0.28888888888888886,
+      "baseline": 0.17777777777777778
+    },
+    "deletion": {
+      "n": 211,
+      "model": 0.5924170616113744,
+      "focused": 0.2985781990521327,
+      "baseline": 0.41232227488151657
+    },
+    "other_consonant": {
+      "n": 435,
+      "model": 0.6114942528735632,
+      "focused": 0.25517241379310346,
+      "baseline": 0.25287356321839083
+    },
+    "other_vowel": {
+      "n": 535,
+      "model": 0.4392523364485981,
+      "focused": 0.1383177570093458,
+      "baseline": 0.44485981308411215
+    },
+    "rhotic": {
+      "n": 372,
+      "model": 0.6935483870967742,
+      "focused": 0.6935483870967742,
+      "baseline": 0.40591397849462363
+    }
+  },
+  "final_threshold": 0.6749999999999998,
+  "final_thresholds": {
+    "balanced": 0.6749999999999998,
+    "gentle": 0.8749999999999998
+  },
+  "protocol": "L2-ARCTIC v5 annotated subset (24 speakers, 6 L1s) + 910 utterances from 7 native US CMU ARCTIC speakers as negatives. Each Arabic-L1 speaker (ABA, SKA, YBAA, ZHAA) is evaluated by a model trained on all other speakers; thresholds chosen on speaker-grouped OOF predictions of the training speakers only. 'baseline' = alignment/GOP detector without the classifier. 'focused' = balanced threshold for core Arabic-L1 codes, gentle otherwise.",
+  "native_false_alarms_per_100_phones": {
+    "focused cmu_arctic": 3.46,
+    "focused libri": 6.25,
+    "balanced cmu_arctic": 6.74,
+    "balanced libri": 13.3,
+    "gentle cmu_arctic": 2.41,
+    "gentle libri": 4.65
+  }
+}

@@ -1,11 +1,13 @@
 import { Chunker, StreamingResampler, toInt16 } from "./resample";
 import type { ServerMessage } from "../api";
 
+export type Strictness = "focused" | "balanced" | "gentle";
+
 export interface StreamerOptions {
   text: string;
   user: string;
   mode?: string;
-  strictness?: "balanced" | "gentle";
+  strictness?: Strictness;
   onMessage: (m: ServerMessage) => void;
   onRecording?: (blob: Blob) => void;
 }
@@ -33,7 +35,7 @@ export class MicStreamer {
     });
     ws.send(JSON.stringify({ type: "format", dtype: "int16" }));
     ws.send(
-      JSON.stringify({ type: "start", text: opts.text, user: opts.user, mode: opts.mode ?? "repeat", strictness: opts.strictness ?? "balanced" }),
+      JSON.stringify({ type: "start", text: opts.text, user: opts.user, mode: opts.mode ?? "repeat", strictness: opts.strictness ?? "focused" }),
     );
 
     this.stream = await navigator.mediaDevices.getUserMedia({
