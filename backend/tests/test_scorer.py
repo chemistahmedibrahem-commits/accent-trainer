@@ -80,7 +80,9 @@ def test_shipped_scorer_integrates_with_engine() -> None:
     assert {"accuracy", "fluency", "prosody", "total"} <= {k for k, v in r["scores"].items() if v is not None}
     bad_tp = list(tp)
     bad_tp[0] = "S"  # "sink about the street"
-    r2 = PronunciationEngine(SyntheticAcousticModel(bad_tp), EngineConfig(scorer_path=str(model))).assess(AUDIO, text)
+    r2 = PronunciationEngine(SyntheticAcousticModel(bad_tp), EngineConfig(scorer_path=str(model))).assess(
+        AUDIO, text
+    )
     d2 = r2.to_dict()
     assert d2["words"][0]["phones"][0]["score"] < r["words"][0]["phones"][0]["score"]
     assert ("TH_SUB", "think") in {(e["code"], e["word"]) for e in d2["errors"]}

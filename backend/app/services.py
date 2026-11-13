@@ -49,11 +49,15 @@ def warmup() -> str:
 def _config(gender: str) -> EngineConfig:
     # the scorer is trained for one acoustic model's features; never pair it with the synthetic double
     use_scorer = (
-        settings.acoustic_backend != "synthetic" and bool(settings.scorer_path) and Path(settings.scorer_path).exists()
+        settings.acoustic_backend != "synthetic"
+        and bool(settings.scorer_path)
+        and Path(settings.scorer_path).exists()
     )
+    use_mdd = use_scorer and bool(settings.mdd_path) and Path(settings.mdd_path).exists()
     return EngineConfig(
         default_gender="female" if gender == "female" else "male",
         scorer_path=settings.scorer_path if use_scorer else None,
+        mdd_path=settings.mdd_path if use_mdd else None,
     )
 
 

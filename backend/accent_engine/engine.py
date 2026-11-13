@@ -35,6 +35,7 @@ class EngineConfig:
     default_gender: Literal["male", "female"] = "male"
     pause_min_s: float = 0.25
     scorer_path: str | None = None  # learned phone scorer (joblib); None → calibrated GOP
+    mdd_path: str | None = None  # mispronunciation detector (needs scorer_path); decides reported errors
     export_features: bool = False  # attach per-phone scorer features (for training/eval)
 
 
@@ -165,6 +166,11 @@ class PronunciationEngine:
             from .scorer import LearnedScorer
 
             self.scorer = LearnedScorer.load(self.config.scorer_path)
+        self.mdd = None
+        if self.config.mdd_path and self.scorer is not None:
+            from .mdd import MDDModel
+
+            self.mdd = MDDModel.load(self.config.mdd_path)
 
     def assess(
         self,
@@ -314,18 +320,48 @@ class PronunciationEngine:
         if self.scorer is None:
             return errors
         learned = self.scorer.score(X)
-        gate = self.scorer.error_gate
         for pr, sc in zip(phones, learned, strict=True):
             pr.score = float(sc)
-        # keep a phone-level error only if the learned scorer agrees the phone is off
-        return [
-            e
-            for e in errors
-            if e.target_index is None
-            or e.expected is None
-            or e.severity == "minor"
-            or learned[e.target_index] < gate
+        keep_always = [
+            e for e in errors if e.target_index is None or e.expected is None or e.severity == "minor"
         ]
+        phone_errs = [e for e in errors if e not in keep_always]
+        if self.mdd is None:
+            # keep a phone-level error only if the learned scorer agrees the phone is off
+            out = keep_always + [e for e in phone_errs if learned[e.target_index] < self.scorer.error_gate]
+            return self._cap_reported(out, phones)
+        from .errors import classify_substitution
+        from .mdd import likely_realisation
+
+        p_err = self.mdd.proba(X, learned)
+        flagged = p_err >= self.mdd.threshold
+        out = keep_always + [e for e in phone_errs if flagged[e.target_index]]
+        have = {e.target_index for e in out if e.expected is not None and e.severity != "minor"}
+        for i in np.nonzero(flagged)[0]:
+            if int(i) in have:
+                continue
+            t = tp[int(i)]
+            real = likely_realisation(X[int(i)], t.phone)
+            code = (
+                ("RHOTIC" if t.phone in ("R", "ER") else "DELETION")
+                if real == "<del>"
+                else classify_substitution(t, real)
+            )
+            out.append(
+                PronunciationError(code, int(i), t.word_index, t.phone, real, "gop", float(p_err[int(i)]))
+            )
+        out.sort(key=lambda e: (e.word_index, e.target_index if e.target_index is not None else -1))
+        return self._cap_reported(out, phones)
+
+    @staticmethod
+    def _cap_reported(
+        errors: list[PronunciationError], phones: list[PhoneResult]
+    ) -> list[PronunciationError]:
+        """What the learner sees must agree: a reported (non-minor) error never shows a "good" score."""
+        for e in errors:
+            if e.target_index is not None and e.expected is not None and e.severity != "minor":
+                phones[e.target_index].score = min(phones[e.target_index].score, 45.0)
+        return errors
 
     def _phone_results(
         self,

@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     max_utterance_s: float = 20.0
     # learned phone/utterance scorer trained for the model above ("" → calibrated GOP)
     scorer_path: str = str(Path(__file__).resolve().parents[1] / "models" / "scorer_slplab.joblib")
+    # mispronunciation detector trained on L2-ARCTIC (decides which errors are reported)
+    mdd_path: str = str(Path(__file__).resolve().parents[1] / "models" / "mdd_slplab.joblib")
     reference_tts: bool = True  # synthesize a GA reference for intonation scoring
 
 
