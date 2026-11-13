@@ -104,6 +104,7 @@ def assess(
     norm: dict[str, Any] | None,
     gender: str,
     reference: NDArray[np.float32] | None = None,
+    strictness: str | None = None,
 ) -> dict[str, Any]:
     if len(audio) > settings.max_utterance_s * SAMPLE_RATE:
         raise ValueError("utterance too long")
@@ -119,7 +120,11 @@ def assess(
     )
     if reference is None:
         reference = reference_audio(text)
-    return engine_for(text, gender).assess(audio, text, speaker_norm=sn, reference_audio=reference).to_dict()
+    return (
+        engine_for(text, gender)
+        .assess(audio, text, speaker_norm=sn, reference_audio=reference, strictness=strictness)
+        .to_dict()
+    )
 
 
 async def get_or_create_user(db: AsyncSession, name: str) -> User:

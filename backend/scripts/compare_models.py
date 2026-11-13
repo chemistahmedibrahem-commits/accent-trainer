@@ -31,8 +31,11 @@ def main() -> None:
     report = {}
     for mid in models:
         scorer = os.environ.get("AT_SCORER_PATH") or None
+        mdd = os.environ.get("AT_MDD_PATH") or None
+        strictness = os.environ.get("AT_STRICTNESS") or None
         eng = PronunciationEngine(
-            Wav2Vec2PhonemeModel(mid), EngineConfig(formants=False, prosody=False, scorer_path=scorer)
+            Wav2Vec2PhonemeModel(mid),
+            EngineConfig(formants=True, prosody=False, scorer_path=scorer, mdd_path=mdd),
         )
         n_ph = n_err = coda_r = coda_r_ok = 0
         codes: collections.Counter[str] = collections.Counter()
@@ -40,7 +43,7 @@ def main() -> None:
         for path, text in rows:
             a, _ = sf.read(path, dtype="float32")
             audio_s += len(a) / 16000
-            r = eng.assess(a, text).to_dict()
+            r = eng.assess(a, text, strictness=strictness).to_dict()
             t_model += r["timing_ms"]["acoustic"] / 1000
             ph = [p for w in r["words"] for p in w["phones"]]
             n_ph += len(ph)

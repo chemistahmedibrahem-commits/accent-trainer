@@ -5,6 +5,7 @@ export interface StreamerOptions {
   text: string;
   user: string;
   mode?: string;
+  strictness?: "balanced" | "gentle";
   onMessage: (m: ServerMessage) => void;
   onRecording?: (blob: Blob) => void;
 }
@@ -31,7 +32,9 @@ export class MicStreamer {
       ws.onerror = () => reject(new Error("WebSocket connection failed"));
     });
     ws.send(JSON.stringify({ type: "format", dtype: "int16" }));
-    ws.send(JSON.stringify({ type: "start", text: opts.text, user: opts.user, mode: opts.mode ?? "repeat" }));
+    ws.send(
+      JSON.stringify({ type: "start", text: opts.text, user: opts.user, mode: opts.mode ?? "repeat", strictness: opts.strictness ?? "balanced" }),
+    );
 
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false, autoGainControl: true },

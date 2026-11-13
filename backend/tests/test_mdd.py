@@ -45,3 +45,11 @@ def test_engine_reports_mdd_flags_with_diagnosis() -> None:
     phone_errs = [e for e in r["errors"] if e["expected"] is not None and e["severity"] != "minor"]
     assert [e["target_index"] for e in phone_errs] == [0]
     assert r["words"][0]["phones"][0]["score"] <= 45
+
+
+def test_strictness_thresholds() -> None:
+    m = MDDModel(_Stub(), 0.6, {}, {"balanced": 0.6, "gentle": 0.8})
+    assert m.threshold_for(None) == 0.6
+    assert m.threshold_for("gentle") == 0.8
+    assert m.threshold_for("unknown") == 0.6
+    assert MDDModel(_Stub(), 0.5, {}).threshold_for("gentle") == 0.5  # older bundles: one threshold

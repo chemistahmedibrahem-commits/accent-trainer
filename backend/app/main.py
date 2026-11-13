@@ -119,13 +119,16 @@ async def api_assess(
     text: str = Form(...),
     user: str = Form("default"),
     mode: str = Form("repeat"),
+    strictness: str = Form("balanced"),
     audio: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     pcm = services.decode_audio(await audio.read())
     u = await services.get_or_create_user(db, user)
     try:
-        result = await run_in_threadpool(services.assess, pcm, text, u.speaker_norm, u.gender)
+        result = await run_in_threadpool(
+            services.assess, pcm, text, u.speaker_norm, u.gender, None, strictness
+        )
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     att = await services.record_attempt(db, u, text, mode, result, pcm)
@@ -335,7 +338,7 @@ async def report(name: str, fmt: str, db: AsyncSession = Depends(get_db)) -> Res
 # --------------------------------------------------------------------------- WebSocket
 #
 # Protocol (client → server):
-#   {"type": "start", "text": "...", "user": "name", "mode": "repeat"}   (text optional until speech ends)
+#   {"type": "start", "text": "...", "user": "name", "mode": "repeat", "strictness": "balanced"|"gentle"}   (text optional until speech ends)
 #   binary frames: little-endian float32 or int16 PCM, mono, 16 kHz, any chunk size (20–40 ms typical)
 #   {"type": "format", "dtype": "int16" | "float32"}
 #   {"type": "stop"}  → force end of utterance
@@ -352,6 +355,7 @@ async def stream(ws: WebSocket) -> None:
     text: str | None = None
     user_name = "default"
     mode = "repeat"
+    strictness = "balanced"
     dtype: type[np.floating[Any]] | type[np.integer[Any]] = np.float32
     level_every = 3  # frames of 32 ms → ~100 ms
     n_frames = 0
@@ -365,7 +369,9 @@ async def stream(ws: WebSocket) -> None:
         try:
             async with SessionLocal() as db:
                 u = await services.get_or_create_user(db, user_name)
-                result = await run_in_threadpool(services.assess, audio, text, u.speaker_norm, u.gender)
+                result = await run_in_threadpool(
+                    services.assess, audio, text, u.speaker_norm, u.gender, None, strictness
+                )
                 att = await services.record_attempt(db, u, text, mode, result, audio)
             await ws.send_json(
                 {
@@ -414,6 +420,7 @@ async def stream(ws: WebSocket) -> None:
                     text = data.get("text") or text
                     user_name = data.get("user") or user_name
                     mode = data.get("mode") or mode
+                    strictness = data.get("strictness") or strictness
                     seg = UtteranceSegmenter()
                 elif kind == "format":
                     dtype = np.int16 if data.get("dtype") == "int16" else np.float32

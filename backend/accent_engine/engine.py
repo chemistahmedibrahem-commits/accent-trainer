@@ -178,7 +178,10 @@ class PronunciationEngine:
         text: str,
         speaker_norm: SpeakerNorm | None = None,
         reference_audio: NDArray[np.float32] | None = None,
+        strictness: str | None = None,
     ) -> Assessment:
+        """``strictness``: feedback level for the mispronunciation detector ("balanced" default,
+        "gentle" = fewer, higher-precision corrections)."""
         cfg = self.config
         timing: dict[str, float] = {}
         warnings: list[str] = []
@@ -233,7 +236,7 @@ class PronunciationEngine:
         if segs is not None and (self.scorer is not None or cfg.export_features):
             t_s = time.perf_counter()
             raw = ([replace(p) for p in phones], list(errors))  # GOP-based, ungated: utterance-model inputs
-            errors = self._learned(post, tp, segs, gop, ops, errors, phones, norm)
+            errors = self._learned(post, tp, segs, gop, ops, errors, phones, norm, strictness)
             timing["scorer"] = (time.perf_counter() - t_s) * 1000
 
         # --- prosody
@@ -291,6 +294,7 @@ class PronunciationEngine:
         errors: list[PronunciationError],
         phones: list[PhoneResult],
         norm: SpeakerNorm | None,
+        strictness: str | None = None,
     ) -> list[PronunciationError]:
         from .scorer import phone_features
 
@@ -334,7 +338,7 @@ class PronunciationEngine:
         from .mdd import likely_realisation
 
         p_err = self.mdd.proba(X, learned)
-        flagged = p_err >= self.mdd.threshold
+        flagged = p_err >= self.mdd.threshold_for(strictness)
         out = keep_always + [e for e in phone_errs if flagged[e.target_index]]
         have = {e.target_index for e in out if e.expected is not None and e.severity != "minor"}
         for i in np.nonzero(flagged)[0]:

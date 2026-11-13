@@ -34,6 +34,7 @@ from accent_engine.alignment import align
 from accent_engine.g2p import build_target, lexicon_for
 
 ARABIC = ("ABA", "SKA", "YBAA", "ZHAA")
+GENTLE_PRECISION = 0.60  # "gentle" feedback: fewer, surer corrections
 
 
 def extract(args: argparse.Namespace) -> None:
@@ -41,6 +42,9 @@ def extract(args: argparse.Namespace) -> None:
         args.cache_dir.mkdir(parents=True, exist_ok=True)
     model = CachedModel(args.model, args.cache_dir)
     eng = PronunciationEngine(model, EngineConfig(formants=True, prosody=False, export_features=True))
+    if args.native_index:
+        _extract_native(args, eng, model)
+        return
     speakers = sorted(p.name for p in args.root.iterdir() if (p / "annotation").is_dir())
     with open(args.out, "w") as out:
         for spk in speakers:
@@ -91,6 +95,41 @@ def extract(args: argparse.Namespace) -> None:
                 out.write(json.dumps({"spk": spk, "utt": g.stem, "phones": rows}) + "\n")
                 n += 1
             print(f"{spk}: {n} utterances", file=sys.stderr, flush=True)
+
+
+def _extract_native(args: argparse.Namespace, eng: PronunciationEngine, model: CachedModel) -> None:
+    """Native American speakers as negatives: every phone labelled correct (appends to --out)."""
+    n = 0
+    with open(args.native_index) as fh, open(args.out, "a") as out:
+        for line in fh:
+            wav, text, spk = line.rstrip("\n").split("\t")
+            audio, _ = sf.read(wav, dtype="float32")
+            model.uid = f"NAT_{Path(wav).stem}"
+            try:
+                r = eng.assess(audio, text).to_dict()
+            except Exception as e:
+                print(f"skip {wav}: {e}", file=sys.stderr)
+                continue
+            flagged = {e["target_index"]: e["realized"] for e in r["errors"] if e["expected"] is not None}
+            rows = []
+            for p in (p for w in r["words"] for p in w["phones"]):
+                rows.append(
+                    {
+                        "features": p.get("features"),
+                        "our_phone": p["phone"],
+                        "stress": p["stress"],
+                        "f1f2": [p["formants"]["f1"], p["formants"]["f2"]] if p.get("formants") else None,
+                        "wrong": 0,
+                        "canon": p["phone"],
+                        "perceived": p["phone"],
+                        "kind": "",
+                        "baseline_flag": int(p["index"] in flagged),
+                        "baseline_diag": flagged.get(p["index"]),
+                    }
+                )
+            out.write(json.dumps({"spk": f"NAT_{spk}", "utt": Path(wav).stem, "phones": rows}) + "\n")
+            n += 1
+    print(f"native: {n} utterances", file=sys.stderr)
 
 
 def _prf(pred: np.ndarray, gold: np.ndarray) -> dict[str, float]:
@@ -156,10 +195,15 @@ def train(args: argparse.Namespace) -> None:
             random_state=0,
         )
 
-    def pick_threshold(Xt: np.ndarray, yt: np.ndarray, gt: np.ndarray) -> float:
+    def pick_thresholds(Xt: np.ndarray, yt: np.ndarray, gt: np.ndarray) -> dict[str, float]:
+        """Chosen on speaker-grouped OOF predictions of the *training* speakers only."""
         oof = cross_val_predict(make(), Xt, yt, groups=gt, cv=GroupKFold(5), method="predict_proba")[:, 1]
-        best = max((_prf(oof >= t, yt)["f1"], float(t)) for t in np.arange(0.2, 0.95, 0.025))
-        return best[1]
+        grid = np.arange(0.2, 0.975, 0.025)
+        stats = [(float(t), _prf(oof >= t, yt)) for t in grid]
+        balanced = max(stats, key=lambda x: x[1]["f1"])[0]
+        ok = [(t, m) for t, m in stats if m["precision"] >= GENTLE_PRECISION]
+        gentle = max(ok, key=lambda x: x[1]["recall"])[0] if ok else float(grid[-1])
+        return {"balanced": balanced, "gentle": max(gentle, balanced)}
 
     report: dict[str, Any] = {
         "n_phones": len(y),
@@ -167,20 +211,24 @@ def train(args: argparse.Namespace) -> None:
         "error_rate": float(y.mean()),
         "loso_arabic": {},
     }
-    agg_pred, agg_base, agg_gold, agg_cat = [], [], [], []
+    agg_pred, agg_base, agg_gold, agg_cat, agg_gentle, agg_proba = [], [], [], [], [], []
     diag_ok = diag_n = 0
     for held in ARABIC:
         tr, te = spk != held, spk == held
         if not te.any():
             continue
-        thr = pick_threshold(Xa[tr], y[tr], spk[tr])
+        thrs = pick_thresholds(Xa[tr], y[tr], spk[tr])
         m = make().fit(Xa[tr], y[tr])
-        pred = m.predict_proba(Xa[te])[:, 1] >= thr
+        proba = m.predict_proba(Xa[te])[:, 1]
+        pred = proba >= thrs["balanced"]
         report["loso_arabic"][held] = {
             "model": _prf(pred, y[te]),
+            "gentle": _prf(proba >= thrs["gentle"], y[te]),
             "baseline": _prf(base[te], y[te]),
-            "threshold": thr,
+            "thresholds": thrs,
         }
+        agg_gentle.append(proba >= thrs["gentle"])
+        agg_proba.append(proba)
         agg_pred.append(pred)
         agg_base.append(base[te])
         agg_gold.append(y[te])
@@ -194,8 +242,14 @@ def train(args: argparse.Namespace) -> None:
         print(held, json.dumps(report["loso_arabic"][held]), file=sys.stderr, flush=True)
     P, B, G = np.concatenate(agg_pred), np.concatenate(agg_base), np.concatenate(agg_gold)
     cats = np.array(agg_cat)
+    Pr = np.concatenate(agg_proba)
+    report["arabic_pr_curve"] = [
+        {"threshold": float(t), **{k: round(v, 3) for k, v in _prf(Pr >= t, G).items()}}
+        for t in np.arange(0.5, 0.975, 0.05)
+    ]
     report["arabic_overall"] = {
         "model": _prf(P, G),
+        "gentle": _prf(np.concatenate(agg_gentle), G),
         "baseline": _prf(B, G),
         "diagnosis_accuracy": diag_ok / max(diag_n, 1),
     }
@@ -207,15 +261,18 @@ def train(args: argparse.Namespace) -> None:
         }
         for c in sorted(set(agg_cat) - {""})
     }
-    thr = pick_threshold(Xa, y, spk)
+    thrs = pick_thresholds(Xa, y, spk)
     final = make().fit(Xa, y)
+    thr = thrs["balanced"]
     report["final_threshold"] = thr
+    report["final_thresholds"] = thrs
     print(json.dumps(report, indent=2))
     if args.out:
         joblib.dump(
             {
                 "model": final,
                 "threshold": thr,
+                "thresholds": thrs,
                 "feature_names": list(MDD_FEATURES),
                 "meta": {k: v for k, v in report.items() if k != "speakers"},
             },
@@ -231,6 +288,7 @@ def main() -> None:
     e.add_argument("--model", required=True)
     e.add_argument("--cache-dir", type=Path, default=None)
     e.add_argument("--out", type=Path, required=True)
+    e.add_argument("--native-index", type=Path, default=None, help="wav<TAB>text<TAB>speaker (appends)")
     t = sub.add_parser("train")
     t.add_argument("--feats", type=Path, required=True)
     t.add_argument("--scorer", required=True)

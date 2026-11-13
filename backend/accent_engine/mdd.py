@@ -26,8 +26,14 @@ _LPR0 = FEATURE_NAMES.index(f"lpr_vs_{CANDIDATES[0]}")
 @dataclass
 class MDDModel:
     model: Any
-    threshold: float
+    threshold: float  # "balanced" (F1-optimal on training-speaker OOF predictions)
     meta: dict[str, Any]
+    thresholds: dict[str, float] | None = None  # e.g. {"balanced": .., "gentle": ..}
+
+    def threshold_for(self, strictness: str | None) -> float:
+        if strictness and self.thresholds and strictness in self.thresholds:
+            return float(self.thresholds[strictness])
+        return self.threshold
 
     @classmethod
     def load(cls, path: str | Path) -> MDDModel:
@@ -36,7 +42,7 @@ class MDDModel:
         b = joblib.load(path)
         if tuple(b["feature_names"]) != MDD_FEATURES:
             raise ValueError("MDD model was trained with a different feature set")
-        return cls(b["model"], float(b["threshold"]), b.get("meta", {}))
+        return cls(b["model"], float(b["threshold"]), b.get("meta", {}), b.get("thresholds"))
 
     def proba(self, X: NDArray[np.float64], so762_scores: NDArray[np.float64]) -> NDArray[np.float64]:
         from threadpoolctl import threadpool_limits

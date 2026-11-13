@@ -16,6 +16,21 @@ export function Practice({ user, initialText }: { user: string; initialText?: st
   const [result, setResult] = useState<Assessment & { latency_ms?: number; attempt_id?: number }>();
   const [recording, setRecording] = useState<string>();
   const [error, setError] = useState<string>();
+  const [strictness, setStrictness] = useState<"balanced" | "gentle">(() => {
+    try {
+      return localStorage.getItem("strictness") === "gentle" ? "gentle" : "balanced";
+    } catch {
+      return "balanced";
+    }
+  });
+  const changeStrictness = (v: "balanced" | "gentle") => {
+    setStrictness(v);
+    try {
+      localStorage.setItem("strictness", v);
+    } catch {
+      /* storage unavailable */
+    }
+  };
   const streamer = useRef<MicStreamer>();
 
   useEffect(() => {
@@ -53,7 +68,7 @@ export function Practice({ user, initialText }: { user: string; initialText?: st
     const s = new MicStreamer();
     streamer.current = s;
     try {
-      await s.start({ text, user, onMessage, onRecording: (b) => setRecording(URL.createObjectURL(b)) });
+      await s.start({ text, user, strictness, onMessage, onRecording: (b) => setRecording(URL.createObjectURL(b)) });
       setState("listening");
     } catch (e) {
       setError((e as Error).message);
@@ -96,6 +111,16 @@ export function Practice({ user, initialText }: { user: string; initialText?: st
           ) : (
             <button className="btn" onClick={() => streamer.current?.stop()}>■ Stop</button>
           )}
+          <select
+            aria-label="Feedback strictness"
+            value={strictness}
+            onChange={(e) => changeStrictness(e.target.value as "balanced" | "gentle")}
+            style={{ flex: "none", width: "auto" }}
+            title="Gentle: fewer, surer corrections. Balanced: catches more errors."
+          >
+            <option value="balanced">Balanced feedback</option>
+            <option value="gentle">Gentle feedback</option>
+          </select>
           <div className="level" aria-hidden><div style={{ width: `${state === "idle" ? 0 : level * 100}%` }} /></div>
         </div>
         <p className="status">{status[state]}{result?.latency_ms != null && state === "idle" ? ` (analysed in ${Math.round(result.latency_ms)} ms)` : ""}</p>
