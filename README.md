@@ -1,82 +1,101 @@
 # American Accent Trainer
 
-Real-time General American pronunciation and accent trainer with phone-level, vowel-acoustic and prosody feedback, tuned for Egyptian Arabic L1 speakers.
+A real-time General American (GA) pronunciation and accent trainer. It gives feedback on phones, vowel acoustics and prosody, explains errors like a speech coach, and adapts training to each learner. It is tuned for learners whose first language is Egyptian Arabic.
 
 ```
-frontend/  React + TS (Vite). AudioWorklet capture → 16 kHz int16 → WebSocket; D3 pitch & vowel charts
+frontend/   React + TS (Vite). AudioWorklet capture → anti-aliased 16 kHz → WebSocket; D3 charts
 backend/
-  accent_engine/   UI-independent scoring engine (pure Python + NumPy, benchmarkable on its own)
-  app/             FastAPI: REST + /ws/stream, SQLAlchemy models, arq worker
-  scripts/         bench_latency.py, eval_speechocean.py
+  accent_engine/  UI-independent scoring engine (benchmarkable on its own)
+  trainer/        adaptive training: BKT skill tracing, FSRS scheduling, drill generation
+  app/            FastAPI (REST + /ws/stream), SQLAlchemy, Claude coach, Whisper, Piper TTS, reports
+  scripts/        evaluation & benchmarking (speechocean762, L2-ARCTIC, native speech, latency)
 docker-compose.yml (+ docker-compose.cpu.yml)   frontend · api · worker · postgres · redis
 ```
 
-## Engine pipeline (`accent_engine`)
+## What it does
+
+| Mode | What the learner gets |
+|---|---|
+| **Practice** (listen & repeat) | American reference audio (normal/slow); live streaming with VAD; overall, accuracy, completeness, fluency and prosody scores; per-phone IPA chips; errors with articulatory tips; pitch contour vs the native reference; vowel chart; coach explanation and three drills |
+| **Today** | Adaptive plan: the weakest *due* skills, starting with ear training (minimal pairs) when mastery is low, then word drills, tongue twisters, and stress-shift pairs |
+| **Conversation** | Role-play (job interview, lab meeting, small talk, doctor visit). Whisper transcribes each turn, the pronunciation engine scores it, and you get a short tip |
+| **Ear training** | Minimal-pair perception tests per contrast |
+| **Progress** | Skill mastery, a weekly heatmap, a daily score trend, top-5 weaknesses, and CSV/PDF export |
+
+## Scoring engine (`backend/accent_engine`)
 
 | Stage | Module | Notes |
 |---|---|---|
-| Text → GA phones | `g2p.py` | CMUdict (all variants, e.g. REcord/reCORD), weak forms (*to, for, and, the…*), context reductions (*gonna, wanna, gotta, hafta, kinda*), OOV fallback: `g2p_en` if installed, else letter-to-sound rules. Post-lexical GA rules: **flap T/D**, **glottal T** before syllabic n (*button*), **dark-L** marking. |
-| Acoustic model | `acoustic.py` | `AcousticModel` protocol producing posteriors over one ARPAbet vocabulary. `Wav2Vec2PhonemeModel` (default `facebook/wav2vec2-xlsr-53-espeak-cv-ft`) pools its IPA tokens into ARPAbet classes. `SyntheticAcousticModel` is a test double. |
-| Recognition + alignment | `ctc.py`, `alignment.py` | NumPy CTC: greedy decoding, Viterbi forced alignment, batched forward pass. Needleman–Wunsch alignment with articulatory substitution costs, so TH→S counts as a substitution and an epenthetic vowel counts as an insertion. |
-| GOP | `gop.py` | **GOP-LPR** (alignment-free, after GOP-AF): log-likelihood ratio of the canonical sequence against the best single-phone substitution or deletion, computed in a ±2-phone window, so cost grows linearly with length. **GOP-frame**: blank-weighted posterior GOP. Uses a logistic calibration to 0–100. |
-| Errors | `errors.py` | Arabic-L1 taxonomy: P_B, V_F, TH_SUB, DH_SUB, IH_IY, UH_UW, AE_EH, SCHWA_REDUCTION, RHOTIC, FLAP_T, DARK_L, EPENTHESIS, FINAL_DEVOICING (+ generic sub/del/ins). Errors come from the alignment *or* from GOP alone (aligned as correct but acoustically closer to a competitor). Each entry carries an articulatory tip. |
-| Vowels | `formants.py`, `vowel_space.py` | Praat Burg formants over the middle 40 % of each aligned vowel. Lobanov/Nearey speaker normalisation from a 12-word hVd calibration session; Hillenbrand et al. (1995) GA reference. |
-| Prosody | `prosody.py` | F0 (Praat AC for real time, pYIN offline), energy, DTW intonation similarity in semitones, syllable prominence → lexical stress check, rhythm (nPVI-V, %V, ΔC, VarcoV). |
-| Streaming | `vad.py` | Energy VAD by default (Silero when torch is present) with an utterance segmenter that handles pre-roll and hangover. |
-| Orchestration | `engine.py` | `PronunciationEngine.assess(audio, text, speaker_norm=None, reference_audio=None)` → JSON-serialisable `Assessment` (words, phones, errors, scores, prosody tracks, timings). |
+| Text → GA phones | `g2p.py` | CMUdict (all variants, e.g. REcord/reCORD), weak forms, *gonna/wanna/gotta*. OOV words go through a morphological fallback (possessive/plural/-ed/-ing on a known stem), then letter-to-sound rules. GA post-lexical rules: flap T/D, glottal T before syllabic n, dark-L marking. Accepted GA variation: pre-/r/ mergers, reduced vowels [ə]/[ɪ], the cot–caught merger, [d]-like flaps. |
+| Acoustic model | `acoustic.py` | One ARPAbet posterior interface over any HF CTC phone model. It handles espeak-IPA, TIMIT/ARPAbet, and L2 vocabularies with `_err` tokens. Two-phone tokens (`ɑːɹ`, `el`, `ts`, …) are split exactly by frame doubling. Classes a model lacks borrow an alias's posterior. |
+| Recognition & alignment | `ctc.py`, `alignment.py` | NumPy CTC (greedy, Viterbi forced alignment, batched forward). Needleman–Wunsch with articulatory costs. |
+| GOP | `gop.py` | GOP-LPR (alignment-free, GOP-AF style) in a ±2-phone window (linear time), plus frame GOP |
+| **Learned scorer** | `scorer.py` | Gradient-boosted regressor trained on speechocean762 **train**. Features: the LPR vector against every phone and against deletion, posterior statistics, the `_err`-token mass, duration, identity/context, and speaker-normalised vowel quality. It replaces calibrated GOP and gates error reports. |
+| Errors | `errors.py` | Arabic-L1 taxonomy: P_B, V_F, TH_SUB, DH_SUB, IH_IY, UH_UW, AE_EH, SCHWA_REDUCTION, RHOTIC, FLAP_T, DARK_L, EPENTHESIS, FINAL_DEVOICING (+ generic sub/del/ins) |
+| Vowels | `formants.py`, `vowel_space.py` | Praat Burg formants; Lobanov/Nearey normalisation from an hVd calibration; Hillenbrand (1995) GA targets |
+| Prosody | `prosody.py` | F0 (Praat; pYIN offline), DTW intonation vs. a Piper GA reference, lexical stress from syllable prominence, rhythm (nPVI, %V, ΔC) |
 
-Scores: accuracy (phone GOP, capped on hard errors), completeness (words ≥50 % produced), fluency (pauses, articulation rate) and prosody (stress, rhythm, intonation when a reference exists). Total = 0.5/0.15/0.15/0.2 weighted.
+### Choosing the acoustic model: measured, not assumed
+
+The spec suggested `facebook/wav2vec2-xlsr-53-espeak-cv-ft`. Measured on native American read speech (LibriSpeech speaker 1272, `scripts/compare_models.py`), it **detected only 3.6% of post-vocalic /r/** ("car", "sort", "near"). Its espeak-derived labels are effectively non-rhotic, so it would flag every American speaker on the most important Arabic-L1 contrast.
+
+| Model | Coda-/r/ recall (native) | CPU RTF |
+|---|---|---|
+| espeak-cv-ft (spec default) | 3.6% | 0.40 |
+| TIMIT base, ARPAbet-39 | 76% | **0.05** |
+| vitouphy TIMIT (IPA) | 81% | 0.37 |
+| **slplab L2-English (default)** | **95%** | 0.29 |
+| speech31 WavLM | 92% | 0.15 |
+
+### Accuracy on speechocean762 (held-out **test** split, human phone ratings 0–2)
+
+RESULTS_TABLE
+
+## The coach never invents scores
+
+`app/coach.py` sends Claude (`claude-opus-5-5`, structured outputs, low effort, server-side refusal fallback) a compact digest of the engine output. The reply must match a JSON schema (summary, ≤3 focus items, 3 drills). A validator then rejects any reply that contains a number not present in the digest, or an error code or word the engine didn't report. Rejected or failed calls fall back to a deterministic rule-based coach built from the taxonomy tips and generated drills. Without `ANTHROPIC_API_KEY` the rule-based coach is used.
+
+## Adaptive training (`backend/trainer`)
+
+* **Skills = the error taxonomy (+ word stress).** Every target phone is an *opportunity* for the skills it exercises. It counts as correct unless the engine reported that error at that site, which is the per-opportunity evidence BKT needs.
+* **BKT with forgetting**, because a "mastered" skill must be able to drop again when errors return (fossilisation).
+* **FSRS-5** scheduling per skill, graded from the session's scores.
+* **Drill generation** from CMUdict + word frequencies: target words by skill and position, **mined minimal pairs** (ship/sheep, bag/back, think/sink…), stress-shift pairs, tongue twisters, and shadowing passages.
 
 ## Run
 
 ```bash
 cd backend && python -m venv ../.venv && . ../.venv/bin/activate
-pip install -e ".[dev,ml]"          # drop `ml` to run without torch (synthetic backend only)
-uvicorn app.main:app --reload       # AT_ACOUSTIC_BACKEND=synthetic for UI work without a model
+pip install -e ".[dev,ml,speech]"
+AT_ACOUSTIC_MODEL_ID=slplab/wav2vec2-large-robust-L2-english-phoneme-recognition \
+AT_SCORER_PATH=models/scorer_slplab.joblib uvicorn app.main:app
 ```
 
 ```bash
-cd frontend && npm install && npm run dev    # http://localhost:5173, proxies /api and /ws to :8000
+cd frontend && npm install && npm run dev        # http://localhost:5173 (proxies /api, /ws)
 ```
 
-Full stack (GPU): `docker compose up --build`. On CPU only: `docker compose -f docker-compose.yml -f docker-compose.cpu.yml up --build`. The UI is then at http://localhost:8080.
+Optional: `ANTHROPIC_API_KEY` turns on the Claude coach and conversation partner. `AT_ACOUSTIC_BACKEND=synthetic` gives UI development without a model.
+Full stack: `docker compose up --build` (GPU) or `docker compose -f docker-compose.yml -f docker-compose.cpu.yml up --build`.
+
+## Evaluate
+
+```bash
+# speechocean762 (openslr.org/101): extract features (posteriors cached), then fit
+python scripts/eval_speechocean.py extract --root DATA/speechocean762 --model MODEL --cache-dir cache --out feats.jsonl
+python scripts/eval_speechocean.py train-scorer --feats feats.jsonl --model-id MODEL --out models/scorer.joblib
+# L2-ARCTIC Arabic-L1 speakers: mispronunciation detection & diagnosis
+python scripts/eval_l2arctic.py --root DATA/l2arctic --model MODEL --scorer models/scorer.joblib
+# native speech false-positive rate + coda-/r/ recall
+python scripts/compare_models.py DATA/native/index.tsv MODEL [MODEL...]
+python scripts/bench_latency.py
+```
 
 ## Checks
 
 ```bash
-cd backend && ruff check . && ruff format --check . && mypy accent_engine app && pytest -q
+cd backend && ruff check . && ruff format --check . && mypy accent_engine app trainer && pytest -q
 cd frontend && npm run lint && npm run typecheck && npm test && npm run build
-python backend/scripts/bench_latency.py
-python backend/scripts/eval_speechocean.py --root /data/speechocean762   # needs the dataset + `ml`
 ```
 
-### Latency budget (post-model, CPU, measured by `bench_latency.py`)
-
-| phones | audio | scoring | formants | prosody | total |
-|---:|---:|---:|---:|---:|---:|
-| 4 | 1.1 s | 2 ms | 12 ms | 4 ms | 18 ms |
-| 19 | 2.0 s | 11 ms | 22 ms | 6 ms | 39 ms |
-| 40 | 3.6 s | 24 ms | 37 ms | 10 ms | 72 ms |
-| 71 | 6.2 s | 44 ms | 65 ms | 16 ms | 129 ms |
-
-Add the wav2vec2-large forward pass: roughly 30–60 ms for 3 s of audio on a modern GPU, several hundred ms on CPU. VAD end-of-speech adds a 0.5 s hangover before processing starts. Not yet implemented: batching concurrent utterances across WebSocket sessions on the GPU.
-
-## Status against the build plan
-
-| Step | State |
-|---|---|
-| 1. Monorepo, Compose, CI | ✅ (compose files validated; images not built in the dev sandbox) |
-| 2. Audio capture + WS streaming | ✅ verified in headless Chromium with a fake microphone |
-| 3. G2P + alignment + GOP + tests | ✅ (69 backend tests; real-model accuracy not yet measured, see below) |
-| 4. Formants + prosody | ✅ verified against synthesised signals with known F1/F2/F0 |
-| 5. Frontend visualisations | ✅ scores, phone chips, error tips, pitch contour, vowel chart, ear training, progress |
-| 6. LLM coach, conversation mode (Whisper) | ⏳ next. Engine output is already structured JSON with taxonomy tips, so the coach only has to explain it. |
-| 7. Adaptive engine (BKT/FSRS), dashboard, speechocean762 eval | ⏳ `PhoneStat` table and eval script exist; BKT/FSRS and PDF/CSV export are still to do |
-
-### Known limitations / honest caveats
-
-* **The real acoustic model has not been run yet.** The dev sandbox could not reach Hugging Face, OpenSLR or the PyTorch wheel index. Everything downstream of posteriors is tested with synthetic posteriors and synthesised audio. The first job on a machine with access is `eval_speechocean.py`, which also fits the GOP calibration. Phone-level PCC ≥ 0.6 is the acceptance target.
-* `Calibration` defaults (slope 1.2, intercept 0) and the fluency heuristics are uncalibrated placeholders.
-* `REF_SD` (vowel target spread) is a fixed placeholder until spreads are estimated from native recordings. The dark-L check is a heuristic F2 ratio.
-* CTC phone boundaries come from peaky posteriors split at midpoints. They are good enough for formant midpoints and durations; use MFA for research-grade boundaries.
-* The intonation reference needs reference audio. The browser's TTS *Listen* button can't be captured, so server-side TTS is planned with the coach work.
+STATUS_SECTION

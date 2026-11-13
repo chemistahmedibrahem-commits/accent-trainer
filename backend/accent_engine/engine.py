@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Literal
 
 import numpy as np
@@ -212,16 +212,23 @@ class PronunciationEngine:
                 realized[op.ref_index] = op.hyp if op.hyp is not None else "<del>"
 
         phones = self._phone_results(tp, gop, segs, post, realized, errors)
-        if segs is not None and (self.scorer is not None or cfg.export_features):
-            t_s = time.perf_counter()
-            errors = self._learned(post, tp, segs, gop, ops, errors, phones)
-            timing["scorer"] = (time.perf_counter() - t_s) * 1000
 
         # --- formants / vowel space / dark L
         t2 = time.perf_counter()
+        norm = speaker_norm
         if cfg.formants and segs is not None:
-            errors += self._acoustic_checks(audio, tp, phones, speaker_norm, warnings)
+            if norm is None:
+                norm = SpeakerNorm.default(cfg.default_gender)
+                warnings.append("vowel scores use a default speaker normalisation; run calibration")
+            errors += self._acoustic_checks(audio, tp, phones, norm)
         timing["formants"] = (time.perf_counter() - t2) * 1000
+
+        raw = None
+        if segs is not None and (self.scorer is not None or cfg.export_features):
+            t_s = time.perf_counter()
+            raw = ([replace(p) for p in phones], list(errors))  # GOP-based, ungated: utterance-model inputs
+            errors = self._learned(post, tp, segs, gop, ops, errors, phones, norm)
+            timing["scorer"] = (time.perf_counter() - t_s) * 1000
 
         # --- prosody
         t3 = time.perf_counter()
@@ -234,6 +241,24 @@ class PronunciationEngine:
 
         words = self._word_results(target, phones, errors, stress_by_word, choice)
         scores = self._scores(target, words, ops, prosody_out, fluency)
+        if self.scorer is not None and raw is not None and self.scorer.meta.get("utt_models"):
+            from .scorer import utterance_features
+
+            raw_words = self._word_results(target, raw[0], raw[1], stress_by_word, choice)
+            raw_scores = self._scores(target, raw_words, ops, prosody_out, fluency)
+            learned = self.scorer.utterance(
+                utterance_features(
+                    raw_scores, [p.score for p in phones], self.scorer.error_gate, len(audio) / SAMPLE_RATE
+                )
+            )
+            for ours, theirs in (
+                ("accuracy", "accuracy"),
+                ("fluency", "fluency"),
+                ("prosody", "prosodic"),
+                ("total", "total"),
+            ):
+                if theirs in learned:
+                    scores[ours] = learned[theirs]
         timing["total"] = (time.perf_counter() - t0) * 1000
 
         return Assessment(
@@ -259,6 +284,7 @@ class PronunciationEngine:
         ops: Sequence[AlignOp],
         errors: list[PronunciationError],
         phones: list[PhoneResult],
+        norm: SpeakerNorm | None,
     ) -> list[PronunciationError]:
         from .scorer import phone_features
 
@@ -276,6 +302,11 @@ class PronunciationEngine:
             [g.gop_frame for g in gop],
             [i in hard for i in range(len(tp))],
             [i in matched for i in range(len(tp))],
+            [
+                (pr.formants["f1"], pr.formants["f2"]) if pr.formants and is_vowel(t.phone) else None
+                for t, pr in zip(tp, phones, strict=True)
+            ],
+            norm,
         )
         if self.config.export_features:
             for pr, row in zip(phones, X, strict=True):
@@ -339,24 +370,21 @@ class PronunciationEngine:
         audio: NDArray[np.float32],
         tp: Sequence[TargetPhone],
         phones: list[PhoneResult],
-        norm: SpeakerNorm | None,
-        warnings: list[str],
+        norm: SpeakerNorm,
     ) -> list[PronunciationError]:
-        if norm is None:
-            norm = SpeakerNorm.default(self.config.default_gender)
-            warnings.append("vowel scores use a default speaker normalisation; run calibration")
         tracker = FormantTracker(audio, SAMPLE_RATE, self.config.max_formant)
         errs: list[PronunciationError] = []
         for t, pr in zip(tp, phones, strict=True):
             if pr.end - pr.start < 0.03:
                 continue
-            if is_vowel(t.phone) and t.phone in REFERENCE and t.stress != 0:
+            if is_vowel(t.phone):
                 fm = tracker.measure(pr.start, pr.end)
                 if fm.valid:
                     pr.formants = {"f1": fm.f1, "f2": fm.f2, "f3": fm.f3}
-                    vs = score_vowel(t.phone, fm.f1, fm.f2, norm)
-                    if vs is not None:
-                        pr.vowel_score = asdict(vs)
+                    if t.phone in REFERENCE and t.stress != 0:
+                        vs = score_vowel(t.phone, fm.f1, fm.f2, norm)
+                        if vs is not None:
+                            pr.vowel_score = asdict(vs)
             elif t.allophone == "dark_l":
                 fm = tracker.measure(pr.start, pr.end, portion=0.6)
                 if fm.valid:

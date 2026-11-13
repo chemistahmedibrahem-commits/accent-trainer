@@ -27,6 +27,7 @@ from .acoustic import BLANK_ID, PHONE_TO_ID, Posteriors
 from .ctc import Segment, sequence_log_likelihood
 from .g2p import TargetPhone
 from .phonemes import PHONES, is_vowel
+from .vowel_space import REF_SD, REFERENCE, SpeakerNorm
 
 CANDIDATES: tuple[str, ...] = tuple(p for p in PHONES if p != "Q")
 CLIP = 30.0
@@ -80,6 +81,8 @@ def phone_features(
     gop_frame: Sequence[float],
     hard_err: Sequence[bool],
     matched: Sequence[bool],
+    formants: Sequence[tuple[float, float] | None] | None = None,
+    norm: SpeakerNorm | None = None,
 ) -> NDArray[np.float64]:
     lp = post.log_probs
     probs = np.exp(lp)
@@ -121,8 +124,62 @@ def phone_features(
                 ctx += [CLIP, CLIP, 0.0]
         word = [k for k in range(L) if targets[k].word_index == t.word_index]
         ctx.append(float(np.mean([np.clip(lpr[k], -CLIP, CLIP) for k in word])))
-        rows.append(base + ctx + list(M[i]))
-    return np.asarray(rows, dtype=np.float64)
+        rows.append(base + ctx + list(M[i]) + err_feats(post, segments, i) + [np.nan] * len(VOWEL_FEATURES))
+    X = np.asarray(rows, dtype=np.float64)
+    if formants is not None:
+        fill_vowel_features(X, targets, formants, norm)
+    return X
+
+
+def err_feats(post: Posteriors, segments: Sequence[Segment], i: int) -> list[float]:
+    err = post.aux.get("err")
+    if err is None:
+        return [np.nan] * 4
+    out: list[float] = []
+    for k in (i, i - 1, i + 1):
+        if 0 <= k < len(segments):
+            sg = segments[k]
+            e = np.asarray(err[sg.start : max(sg.end, sg.start + 1)], dtype=np.float64)
+            if k == i:
+                out.append(float(np.mean(e)))
+            out.append(float(np.max(e)))
+        else:
+            out.append(0.0)
+    return out
+
+
+def vowel_feats(phone: str, f1: float, f2: float, norm: SpeakerNorm) -> list[float]:
+    """Speaker-normalised vowel quality relative to the General American target."""
+    if (
+        phone not in REFERENCE
+        or not (np.isfinite(f1) and np.isfinite(f2))
+        or norm.sd[0] <= 0
+        or norm.sd[1] <= 0
+    ):
+        return [np.nan] * len(VOWEL_FEATURES)
+    z = norm.lobanov(f1, f2)
+    d = {v: float(np.linalg.norm(z - r) / REF_SD) for v, r in REFERENCE.items()}
+    other = min(v for k, v in d.items() if k != phone)
+    tgt = REFERENCE[phone]
+    return [float(z[0]), float(z[1]), d[phone], d[phone] - other, float(tgt[0]), float(tgt[1])]
+
+
+def fill_vowel_features(
+    X: NDArray[np.float64],
+    targets: Sequence[TargetPhone],
+    formants: Sequence[tuple[float, float] | None],
+    norm: SpeakerNorm | None,
+) -> None:
+    if norm is None:
+        return
+    start = len(FEATURE_NAMES) - len(VOWEL_FEATURES)
+    for i, t in enumerate(targets):
+        fm = formants[i]
+        if fm is not None:
+            X[i, start:] = vowel_feats(t.phone, fm[0], fm[1], norm)
+
+
+VOWEL_FEATURES = ("v_zf1", "v_zf2", "v_dist_target", "v_margin_nearest", "v_target_zf1", "v_target_zf2")
 
 
 FEATURE_NAMES: tuple[str, ...] = (
@@ -150,8 +207,55 @@ FEATURE_NAMES: tuple[str, ...] = (
     "word_mean_lpr",
     *(f"lpr_vs_{c}" for c in CANDIDATES),
     "lpr_vs_del",
+    "err_mean",
+    "err_max",
+    "prev_err_max",
+    "next_err_max",
+    *VOWEL_FEATURES,
 )
 CATEGORICAL = (FEATURE_NAMES.index("phone_id"),)
+
+
+UTT_FEATURES = (
+    "eng_accuracy",
+    "eng_completeness",
+    "eng_fluency",
+    "eng_prosody",
+    "ph_mean",
+    "ph_min",
+    "ph_p10",
+    "ph_frac_bad",
+    "n_phones",
+    "audio_s",
+    "phones_per_s",
+)
+UTT_TARGETS = ("accuracy", "fluency", "prosodic", "total")
+
+
+def utterance_features(
+    scores: dict[str, Any], phone_scores: Sequence[float], gate: float, audio_s: float
+) -> list[float]:
+    """Utterance-level inputs for the learned 0–10 regressors (engine components + phone stats)."""
+    ps = np.asarray(phone_scores, dtype=np.float64)
+
+    def g(k: str) -> float:
+        v = scores.get(k)
+        return float(v) if v is not None else -1.0  # e.g. no prosody score for a one-word utterance
+
+    n = len(ps)
+    return [
+        g("accuracy"),
+        g("completeness"),
+        g("fluency"),
+        g("prosody"),
+        float(np.mean(ps)) if n else np.nan,
+        float(np.min(ps)) if n else np.nan,
+        float(np.percentile(ps, 10)) if n else np.nan,
+        float((ps < gate).mean()) if n else np.nan,
+        float(n),
+        audio_s,
+        n / audio_s if audio_s > 0 else np.nan,
+    ]
 
 
 @dataclass
@@ -170,7 +274,20 @@ class LearnedScorer:
 
     def score(self, X: NDArray[np.float64]) -> NDArray[np.float64]:
         """Predicted human phone accuracy (0–2) → 0–100."""
-        return np.clip(self.model.predict(X), 0, 2) * 50.0
+        from threadpoolctl import threadpool_limits
+
+        # a few dozen rows per request: OpenMP threads only add spin-up cost (and thrash under load)
+        with threadpool_limits(1):
+            return np.clip(self.model.predict(X), 0, 2) * 50.0
+
+    def utterance(self, feats: list[float]) -> dict[str, float]:
+        """Human-scale (0–10) utterance predictions → 0–100, for whichever targets were trained."""
+        models = self.meta.get("utt_models") or {}
+        from threadpoolctl import threadpool_limits
+
+        X = np.asarray([feats], dtype=np.float64)
+        with threadpool_limits(1):
+            return {k: float(np.clip(m.predict(X)[0], 0, 10) * 10) for k, m in models.items()}
 
     @property
     def error_gate(self) -> float:

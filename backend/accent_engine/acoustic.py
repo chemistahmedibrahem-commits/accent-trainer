@@ -15,7 +15,7 @@ Backends:
 from __future__ import annotations
 
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import numpy as np
@@ -36,6 +36,9 @@ SAMPLE_RATE = 16000
 class Posteriors:
     log_probs: NDArray[np.float64]  # (T, len(VOCAB)), rows are log-softmax
     frame_shift: float  # seconds per frame (wav2vec2: 0.02)
+    # per-frame auxiliary channels, e.g. "err": posterior mass of explicit mispronunciation
+    # tokens for models trained with them (slplab L2 model: "aa_err", "b*", ...)
+    aux: dict[str, NDArray[np.float64]] = field(default_factory=dict)
 
     @property
     def num_frames(self) -> int:
@@ -333,6 +336,9 @@ class Wav2Vec2PhonemeModel:
             id_to_tok[i] = tok
         blank_id = int(self.model.config.pad_token_id)
         self._mapping = pooling_matrix(id_to_tok, id_to_tok[blank_id])
+        self._err_idx = np.array(
+            [i for i, t in enumerate(id_to_tok) if t.endswith("_err") or t.endswith("*")], dtype=np.int64
+        )
         self._torch = torch
 
     def posteriors(self, audio: NDArray[np.float32]) -> Posteriors:
@@ -345,7 +351,13 @@ class Wav2Vec2PhonemeModel:
             logits = self.model(x).logits[0]
             lp = torch.log_softmax(logits.float(), dim=-1).cpu().numpy().astype(np.float64)
         pooled = pool_log_probs(lp, self._mapping)
-        return Posteriors(pooled, frame_shift=0.02 * lp.shape[0] / pooled.shape[0])
+        aux: dict[str, NDArray[np.float64]] = {}
+        if len(self._err_idx):
+            err = np.exp(lp[:, self._err_idx]).sum(axis=1)
+            aux["err"] = (
+                np.repeat(err, pooled.shape[0] // lp.shape[0]) if pooled.shape[0] != lp.shape[0] else err
+            )
+        return Posteriors(pooled, frame_shift=0.02 * lp.shape[0] / pooled.shape[0], aux=aux)
 
 
 # ---------------------------------------------------------------------------

@@ -47,8 +47,9 @@ def warmup() -> str:
 
 
 def _config(gender: str) -> EngineConfig:
-    return EngineConfig(default_gender="female" if gender == "female" else "male",
-                        scorer_path=settings.scorer_path or None)
+    return EngineConfig(
+        default_gender="female" if gender == "female" else "male", scorer_path=settings.scorer_path or None
+    )
 
 
 @lru_cache(maxsize=2)
@@ -59,7 +60,9 @@ def _real_engine(gender: str) -> PronunciationEngine:
 def engine_for(text: str, gender: str = "male") -> PronunciationEngine:
     if settings.acoustic_backend == "synthetic":
         # Dev/test double: "hears" the canonical target, so every attempt scores ~perfect.
-        return PronunciationEngine(SyntheticAcousticModel([p.phone for p in g2p(text).phones]), _config(gender))
+        return PronunciationEngine(
+            SyntheticAcousticModel([p.phone for p in g2p(text).phones]), _config(gender)
+        )
     return _real_engine("female" if gender == "female" else "male")
 
 

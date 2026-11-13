@@ -24,6 +24,8 @@ import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import contextlib
+
 from accent_engine.alignment import align
 from accent_engine.engine import EngineConfig, PronunciationEngine
 from accent_engine.g2p import build_target, lexicon_for
@@ -54,12 +56,14 @@ class CachedModel:
         f = self.cache_dir / f"{self.uid}.npz" if self.cache_dir else None
         if f is not None and f.exists():
             z = np.load(f)
-            return Posteriors(z["lp"].astype(np.float64), float(z["shift"]))
+            aux = {"err": z["err"].astype(np.float64)} if "err" in z.files else {}
+            return Posteriors(z["lp"].astype(np.float64), float(z["shift"]), aux=aux)
         if self._model is None:
             self._model = Wav2Vec2PhonemeModel(self.model_id)
         post = self._model.posteriors(audio)
         if f is not None:
-            np.savez_compressed(f, lp=post.log_probs.astype(np.float16), shift=post.frame_shift)
+            extra = {"err": post.aux["err"].astype(np.float16)} if "err" in post.aux else {}
+            np.savez_compressed(f, lp=post.log_probs.astype(np.float16), shift=post.frame_shift, **extra)
         return post
 
 
@@ -68,7 +72,7 @@ def extract(args: argparse.Namespace) -> None:
     if args.cache_dir:
         args.cache_dir.mkdir(parents=True, exist_ok=True)
     model = CachedModel(args.model, args.cache_dir)
-    cfg = EngineConfig(formants=False, prosody=True, export_features=True, scorer_path=args.scorer)
+    cfg = EngineConfig(formants=True, prosody=True, export_features=True, scorer_path=args.scorer)
     eng = PronunciationEngine(model, cfg)
     t0 = time.time()
     with open(args.out, "w") as out:
@@ -120,6 +124,11 @@ def extract(args: argparse.Namespace) -> None:
                                     "hard_err": int(p["index"] in hard),
                                     "realized": p["realized"],
                                     "features": p.get("features"),
+                                    "our_phone": p["phone"],
+                                    "stress": p["stress"],
+                                    "f1f2": [p["formants"]["f1"], p["formants"]["f2"]]
+                                    if p.get("formants")
+                                    else None,
                                     "flagged": int(p["index"] in flagged),
                                 }
                             )
@@ -228,13 +237,38 @@ def train_scorer(args: argparse.Namespace) -> None:
     with open(args.feats) as fh:
         rows = [json.loads(line) for line in fh]
 
+    from accent_engine.scorer import VOWEL_FEATURES, vowel_feats
+    from accent_engine.vowel_space import REFERENCE, SpeakerNorm
+
+    # per-speaker Lobanov statistics from that speaker's stressed vowels (production: calibration)
+    tokens: dict[str, list[tuple[str, float, float]]] = {}
+    for r in rows:
+        for p in r["phones"]:
+            if p.get("f1f2") and p.get("our_phone") in REFERENCE and p.get("stress"):
+                tokens.setdefault(r["uid"][:5], []).append((p["our_phone"], *p["f1f2"]))
+    norms = {}
+    for spk, toks in tokens.items():
+        with contextlib.suppress(ValueError):
+            norms[spk] = SpeakerNorm.from_tokens(toks)
+    v0 = len(FEATURE_NAMES) - len(VOWEL_FEATURES)
+    for r in rows:
+        nm = norms.get(r["uid"][:5])
+        for p in r["phones"]:
+            if p.get("features") and len(p["features"]) == len(FEATURE_NAMES):
+                vf = [float("nan")] * len(VOWEL_FEATURES)
+                if nm is not None and p.get("f1f2"):
+                    vf = vowel_feats(p["our_phone"], p["f1f2"][0], p["f1f2"][1], nm)
+                p["features"][v0:] = vf
+
     def xy(split: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         ph = [(r["uid"], p) for r in rows if r["split"] == split for p in r["phones"] if p.get("features")]
-        X = np.array([p["features"] for _, p in ph], dtype=np.float64)
+        owners[split] = [u for u, _ in ph]
+        X = np.array([[np.nan if v is None else v for v in p["features"]] for _, p in ph], dtype=np.float64)
         y = np.array([p["human"] for _, p in ph], dtype=np.float64)
         g = np.array([int(u[:5]) for u, _ in ph])  # speaker id → grouped CV (no speaker leakage)
         return X, y, g
 
+    owners: dict[str, list[str]] = {}
     Xtr, ytr, gtr = xy("train")
     Xte, yte, _ = xy("test")
     assert Xtr.shape[1] == len(FEATURE_NAMES), (Xtr.shape, len(FEATURE_NAMES))
@@ -281,7 +315,45 @@ def train_scorer(args: argparse.Namespace) -> None:
         },
         "baseline_lpr_pcc_test": pcc(Xte[:, 0], yte),
     }
+    # ---- utterance level: learned 0–10 regressors on engine components + phone predictions
+    from accent_engine.scorer import UTT_TARGETS, utterance_features
+
+    by_utt: dict[str, list[float]] = {}
+    for split, preds in (("train", np.clip(oof, 0, 2) * 50), ("test", pred * 50)):
+        for u, sc in zip(owners[split], preds, strict=True):
+            by_utt.setdefault(u, []).append(float(sc))
+    U: dict[str, tuple[list[list[float]], dict[str, list[float]], list[int]]] = {
+        "train": ([], {k: [] for k in UTT_TARGETS}, []),
+        "test": ([], {k: [] for k in UTT_TARGETS}, []),
+    }
+    for r in rows:
+        if r["uid"] not in by_utt:
+            continue
+        X_, Y_, G_ = U[r["split"]]
+        X_.append(utterance_features(r["ours"], by_utt[r["uid"]], gate, r["audio_s"]))
+        for k in UTT_TARGETS:
+            Y_[k].append(float(r["human"][k]))
+        G_.append(int(r["uid"][:5]))
+    utt_models, utt_report = {}, {}
+    if U["train"][0] and U["test"][0]:
+        Xu, Xut = np.array(U["train"][0]), np.array(U["test"][0])
+        for k in UTT_TARGETS:
+            m = HistGradientBoostingRegressor(
+                max_iter=300, learning_rate=0.05, max_leaf_nodes=15, min_samples_leaf=20, random_state=0
+            )
+            m.fit(Xu, np.array(U["train"][1][k]))
+            utt_models[k] = m
+            utt_report[k] = pcc(m.predict(Xut), np.array(U["test"][1][k]))
+        eng_key = {"accuracy": 0, "fluency": 2, "prosodic": 3, "total": None}
+        meta["utterance_pcc_test_learned"] = utt_report
+        meta["utterance_pcc_test_engine_raw"] = {
+            k: pcc(Xut[:, i], np.array(U["test"][1][k]))
+            for k, i in eng_key.items()
+            if i is not None
+            if np.isfinite(Xut[:, i]).sum() > 2
+        }
     print(json.dumps(meta, indent=2))
+    meta["utt_models"] = utt_models
     if args.out:
         joblib.dump({"model": model, "feature_names": list(FEATURE_NAMES), "meta": meta}, args.out)
 

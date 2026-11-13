@@ -45,4 +45,17 @@ def test_phone_features_shape_and_names() -> None:
         post, tp, segs, [g.lpr for g in gop], [g.gop_frame for g in gop], [False] * 4, [True] * 4
     )
     assert X.shape == (4, len(FEATURE_NAMES))
-    assert np.isfinite(X).all()
+    core = FEATURE_NAMES.index("err_mean")
+    assert np.isfinite(X[:, :core]).all()
+    assert np.isnan(X[:, core:]).all()  # no _err channel, no formants → missing (HistGBR handles NaN)
+
+
+def test_vowel_features_rank_the_target_vowel() -> None:
+    from accent_engine.scorer import vowel_feats
+    from accent_engine.vowel_space import HILLENBRAND_MALE, SpeakerNorm
+
+    norm = SpeakerNorm.default("male")
+    good = vowel_feats("IH", *HILLENBRAND_MALE["IH"], norm)
+    bad = vowel_feats("IH", *HILLENBRAND_MALE["IY"], norm)  # "sheep" for "ship"
+    assert good[2] < bad[2]  # distance to target
+    assert good[3] < 0 < bad[3]  # closer to target than to any other vowel only when correct
