@@ -9,8 +9,8 @@ We align the engine's target phones to the annotated canonical sequence and repo
 detection precision / recall / F1, diagnosis accuracy (for detected substitutions, did we name
 the perceived phone?), and per-category recall for the Arabic-L1 taxonomy.
 
-Note: some acoustic models (e.g. slplab's L2 model) were fine-tuned on L2-ARCTIC, so numbers for
-those models on these speakers are optimistic — use speechocean762 for unbiased comparison.
+Check that the acoustic model was not fine-tuned on L2-ARCTIC before trusting these numbers
+(the default slplab model was fine-tuned on Korean-English ETRI data, so it is clean here).
 """
 
 from __future__ import annotations
@@ -30,6 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from accent_engine import EngineConfig, PronunciationEngine
 from accent_engine.alignment import align
 from accent_engine.g2p import build_target, lexicon_for
+from accent_engine.phonemes import PHONES
+
+_CLEAN = re.compile(r"[^A-Z]")
 
 
 def read_phone_tier(path: Path) -> list[str]:
@@ -48,16 +51,16 @@ def parse(labels: list[str]) -> list[tuple[str, str, str]]:
     out = []
     for lab in labels:
         parts = [p.strip() for p in lab.split(",")]
-        canon = re.sub(r"\d", "", parts[0]).upper()
+        canon = _CLEAN.sub("", parts[0].upper())  # the corpus has a few typos like "ER)"
         if len(parts) >= 3:
-            perceived = re.sub(r"\d|\*", "", parts[1]).upper()
+            perceived = _CLEAN.sub("", parts[1].upper())
             kind = parts[2].lower()
             if kind == "a":  # insertion: no canonical phone
                 continue
             out.append((canon, perceived, kind))
         elif canon not in ("SIL", "SP", "SPN", ""):
             out.append((canon, canon, ""))
-    return [o for o in out if o[0] not in ("SIL", "SP", "SPN", "")]
+    return [o for o in out if o[0] in PHONES]
 
 
 def category(canon: str, perceived: str, kind: str) -> str:

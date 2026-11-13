@@ -1,0 +1,27 @@
+{
+  "acoustic_model": "slplab/wav2vec2-large-robust-L2-english-phoneme-recognition",
+  "n_train": 46486,
+  "n_test": 46781,
+  "pcc_test": 0.64118015742601,
+  "pcc_oof_train": 0.6647806099247349,
+  "error_gate": 80.0,
+  "mdd_test": {
+    "precision": 0.4562334217506631,
+    "recall": 0.5987341772151898,
+    "flag_rate": 0.08864710031850538,
+    "human_bad_rate": 0.06754879117590475
+  },
+  "baseline_lpr_pcc_test": 0.4112219818168707,
+  "utterance_pcc_test_learned": {
+    "accuracy": 0.7412710474501054,
+    "fluency": 0.8028994149402345,
+    "prosodic": 0.7809992113054335,
+    "total": 0.7630301595392813
+  },
+  "utterance_pcc_test_engine_raw": {
+    "accuracy": 0.628768199545206,
+    "fluency": 0.6054512120379192,
+    "prosodic": -0.05384197905241184
+  },
+  "dataset": "speechocean762 (train: fit, error gate from speaker-grouped OOF; test: held out)"
+}

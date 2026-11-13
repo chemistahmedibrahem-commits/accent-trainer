@@ -59,3 +59,28 @@ def test_vowel_features_rank_the_target_vowel() -> None:
     bad = vowel_feats("IH", *HILLENBRAND_MALE["IY"], norm)  # "sheep" for "ship"
     assert good[2] < bad[2]  # distance to target
     assert good[3] < 0 < bad[3]  # closer to target than to any other vowel only when correct
+
+
+def test_shipped_scorer_integrates_with_engine() -> None:
+    from pathlib import Path
+
+    import pytest
+
+    from accent_engine import EngineConfig, PronunciationEngine
+
+    model = Path(__file__).resolve().parents[1] / "models" / "scorer_slplab.joblib"
+    if not model.exists():
+        pytest.skip("scorer not shipped")
+    text = "think about the street"
+    tp = [p.phone for p in g2p(text).phones]
+    good = PronunciationEngine(SyntheticAcousticModel(tp), EngineConfig(scorer_path=str(model)))
+    r = good.assess(AUDIO, text).to_dict()
+    scores = [p["score"] for w in r["words"] for p in w["phones"]]
+    assert all(0 <= s <= 100 for s in scores)
+    assert {"accuracy", "fluency", "prosody", "total"} <= {k for k, v in r["scores"].items() if v is not None}
+    bad_tp = list(tp)
+    bad_tp[0] = "S"  # "sink about the street"
+    r2 = PronunciationEngine(SyntheticAcousticModel(bad_tp), EngineConfig(scorer_path=str(model))).assess(AUDIO, text)
+    d2 = r2.to_dict()
+    assert d2["words"][0]["phones"][0]["score"] < r["words"][0]["phones"][0]["score"]
+    assert ("TH_SUB", "think") in {(e["code"], e["word"]) for e in d2["errors"]}
